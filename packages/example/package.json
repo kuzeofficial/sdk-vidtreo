@@ -1,0 +1,32 @@
+{
+  "name": "@vidtreo/example",
+  "version": "0.0.0",
+  "description": "Example package",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun run build:js && bun run build:types",
+    "build:js": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external --sourcemap=external",
+    "build:dev": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external --sourcemap=external",
+    "build:prod": "bun build ./src/index.ts --outdir ./dist --target node --format esm --packages external --sourcemap=external --minify-whitespace --minify-identifiers --minify-syntax",
+    "build:types": "bunx tsc --emitDeclarationOnly --declaration --outDir dist --declarationMap",
+    "clean": "rm -rf dist",
+    "test": "echo \"No tests specified\" && exit 0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  }
+}

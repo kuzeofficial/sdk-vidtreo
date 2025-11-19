@@ -1,0 +1,108 @@
+name: Publish Packages to npm
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'packages/**/package.json'
+      - 'packages/**/src/**'
+      - '.github/workflows/publish.yml'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+            **/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lockb') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile --no-save
+
+      - name: Build packages (parallel)
+        run: |
+          # Build all packages in parallel using Bun's native parallel execution
+          # Bun automatically parallelizes builds across packages with --parallel flag
+          bun run build || exit 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Get changed packages
+        id: changed-packages
+        run: |
+          # Get list of changed packages
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # On manual dispatch, check all packages
+            CHANGED_PACKAGES=$(find packages -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | tr '\n' ' ')
+          else
+            # Get packages that changed in the last commit
+            CHANGED_PACKAGES=$(git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -E '^packages/[^/]+/' | cut -d'/' -f2 | sort -u || echo "")
+            if [ -z "$CHANGED_PACKAGES" ]; then
+              # If no specific packages changed, check all packages
+              CHANGED_PACKAGES=$(find packages -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | tr '\n' ' ')
+            fi
+          fi
+          echo "packages=$CHANGED_PACKAGES" >> $GITHUB_OUTPUT
+          echo "Changed packages: $CHANGED_PACKAGES"
+
+      - name: Publish packages to npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for package in ${{ steps.changed-packages.outputs.packages }}; do
+            if [ -d "packages/$package" ]; then
+              echo "Processing package: $package"
+              cd "packages/$package"
+
+              # Check if package.json exists and has a version
+              if [ -f "package.json" ]; then
+                PACKAGE_NAME=$(bun -e "console.log(require('./package.json').name)")
+                PACKAGE_VERSION=$(bun -e "console.log(require('./package.json').version)")
+
+                # Skip if version is 0.0.0 (development version)
+                if [ "$PACKAGE_VERSION" = "0.0.0" ]; then
+                  echo "Skipping $PACKAGE_NAME: version is 0.0.0 (development version)"
+                  cd ../..
+                  continue
+                fi
+
+                # Check if version already exists on npm
+                if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version > /dev/null 2>&1; then
+                  echo "Package $PACKAGE_NAME@$PACKAGE_VERSION already exists on npm, skipping..."
+                else
+                  echo "Publishing $PACKAGE_NAME@$PACKAGE_VERSION"
+                  npm publish --access public || echo "Failed to publish $PACKAGE_NAME"
+                fi
+              else
+                echo "No package.json found in packages/$package, skipping..."
+              fi
+
+              cd ../..
+            fi
+          done

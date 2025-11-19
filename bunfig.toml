@@ -1,0 +1,15 @@
+# Bun configuration file
+# https://bun.sh/docs/cli/bunfig
+
+[install]
+# Use exact versions
+exact = false
+# Production mode
+production = false
+# Install peer dependencies
+peer = true
+# Install optional dependencies
+optional = true
+# Install dev dependencies
+dev = true
+

@@ -1,0 +1,31 @@
+{
+  "name": "@vidtreo/sdk-2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Vidtreo SDK monorepo",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "bun run --filter '*' --parallel build",
+    "build:dev": "bun run --filter '*' --parallel build:dev",
+    "build:prod": "bun run --filter '*' --parallel build:prod",
+    "build:js": "bun run --filter '*' --parallel build:js",
+    "build:types": "bun run --filter '*' --parallel build:types",
+    "test": "bun run --filter '*' --parallel test",
+    "lint": "bunx ultracite check",
+    "format": "bunx ultracite fix",
+    "check": "bunx ultracite check --write",
+    "install:all": "bun install",
+    "clean": "bun run --filter '*' --parallel clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.3.6",
+    "typescript": "^5.9.3",
+    "ultracite": "6.3.4"
+  },
+  "packageManager": "bun@1.1.0",
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}
