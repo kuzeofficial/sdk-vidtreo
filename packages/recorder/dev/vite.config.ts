@@ -18,6 +18,9 @@ export default defineConfig({
       "@vidtreo/recorder": resolve(__dirname, "../src"),
     },
   },
+  css: {
+    postcss: resolve(__dirname, "../postcss.config.ts"),
+  },
   build: {
     outDir: "../dist-dev",
     emptyOutDir: true,

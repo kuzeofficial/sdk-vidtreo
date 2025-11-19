@@ -146,6 +146,83 @@ console.log('Transcoding complete!');
 console.log(`Output size: ${result.buffer.byteLength} bytes`);
 ```
 
+## Web Component
+
+This package also includes a standalone web component (`<vidtreo-recorder>`) that can be used in any HTML page without requiring a build step or framework.
+
+### Building the Web Component
+
+To build the web component, run:
+
+```bash
+bun run build:wc
+```
+
+This will create two files in `dist/wc/`:
+- `vidtreo-recorder.js` - The web component JavaScript bundle
+- `vidtreo-recorder.css` - The Tailwind CSS stylesheet
+
+### Web Component Usage
+
+#### Basic Usage
+
+Include both the CSS and JS files in your HTML:
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My App</title>
+    <!-- Include the CSS file -->
+    <link rel="stylesheet" href="./dist/wc/vidtreo-recorder.css">
+  </head>
+  <body>
+    <!-- Use the web component -->
+    <vidtreo-recorder></vidtreo-recorder>
+
+    <!-- Include the JS file -->
+    <script src="./dist/wc/vidtreo-recorder.js"></script>
+  </body>
+</html>
+```
+
+#### CDN Usage
+
+After uploading the files to your CDN, reference them:
+
+```html
+<link rel="stylesheet" href="https://your-cdn.com/vidtreo-recorder.css">
+<script src="https://your-cdn.com/vidtreo-recorder.js"></script>
+
+<vidtreo-recorder></vidtreo-recorder>
+```
+
+### Web Component Features
+
+- Drag and drop video file upload
+- Click to upload video files
+- Real-time transcoding progress
+- Download transcoded MP4 files
+- Play transcoded videos in a new window
+- Error handling and validation
+
+### Web Component Development
+
+To develop the web component with hot reload:
+
+```bash
+bun run dev:wc
+```
+
+### Web Component File Structure
+
+- `src/components/vidtreo-recorder.wc.ts` - Web component source code
+- `src/styles/tailwind.css` - Tailwind CSS source
+- `vite.wc.config.ts` - Vite configuration for web component build
+- `dist/wc/` - Build output directory
+
 ## License
 
 MIT

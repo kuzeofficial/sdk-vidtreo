@@ -1,2 +1,1 @@
-// Import the web component to register it
 import "../src/components/vidtreo-recorder.wc";
