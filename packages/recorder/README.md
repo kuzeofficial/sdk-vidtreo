@@ -1,11 +1,11 @@
-# @vidtreo/example
+# @vidtreo/recorder
 
 Video transcoding package using mediabunny. Transcodes videos to MP4 format with configurable settings, optimized for Bun runtime.
 
 ## Installation
 
 ```bash
-npm install @vidtreo/example
+npm install @vidtreo/recorder
 ```
 
 ## Usage
@@ -13,7 +13,7 @@ npm install @vidtreo/example
 ### Basic Usage
 
 ```typescript
-import { transcodeVideo } from '@vidtreo/example';
+import { transcodeVideo } from '@vidtreo/recorder';
 
 // Transcode from a Blob
 const videoBlob = new Blob([videoData], { type: 'video/mp4' });
@@ -33,7 +33,7 @@ const result = await transcodeVideo('/path/to/video.mp4');
 ### Custom Configuration
 
 ```typescript
-import { transcodeVideo, DEFAULT_TRANSCODE_CONFIG } from '@vidtreo/example';
+import { transcodeVideo, DEFAULT_TRANSCODE_CONFIG } from '@vidtreo/recorder';
 
 // Use custom configuration
 const result = await transcodeVideo(videoBlob, {
@@ -128,7 +128,7 @@ This package leverages Bun's native capabilities:
 ### Transcode and Save to File (Bun)
 
 ```typescript
-import { transcodeVideo } from '@vidtreo/example';
+import { transcodeVideo } from '@vidtreo/recorder';
 import { writeFile } from 'fs/promises';
 
 const result = await transcodeVideo('/path/to/input.mp4');
@@ -138,7 +138,7 @@ await Bun.write('/path/to/output.mp4', result.buffer);
 ### Transcode with Progress Tracking
 
 ```typescript
-import { transcodeVideo } from '@vidtreo/example';
+import { transcodeVideo } from '@vidtreo/recorder';
 
 console.log('Starting transcoding...');
 const result = await transcodeVideo(videoBlob);

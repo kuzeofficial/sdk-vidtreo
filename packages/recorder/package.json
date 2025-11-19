@@ -1,5 +1,5 @@
 {
-  "name": "@vidtreo/example",
+  "name": "@vidtreo/recorder",
   "version": "0.0.0",
   "description": "Video transcoding package using mediabunny",
   "main": "./dist/index.js",

@@ -9,17 +9,9 @@
   "scripts": {
     "build": "bun run --filter '*' --parallel build",
     "build:dev": "bun run --filter '*' --parallel build:dev",
-    "build:prod": "bun run --filter '*' --parallel build:prod",
-    "build:js": "bun run --filter '*' --parallel build:js",
-    "build:types": "bun run --filter '*' --parallel build:types",
     "test": "bun test --concurrent",
-    "test:watch": "bun test --watch --concurrent",
-    "test:coverage": "bun test --coverage --concurrent",
-    "test:packages": "bun run --filter '*' --parallel test",
     "lint": "bunx ultracite check",
-    "format": "bunx ultracite fix",
-    "install:all": "bun install",
-    "clean": "bun run --filter '*' --parallel clean && rm -rf node_modules"
+    "format": "bunx ultracite fix"
   },
   "devDependencies": {
     "@biomejs/biome": "2.3.6",

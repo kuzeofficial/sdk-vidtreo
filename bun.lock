@@ -10,7 +10,7 @@
       },
     },
     "packages/recorder": {
-      "name": "@vidtreo/example",
+      "name": "@vidtreo/recorder",
       "version": "0.0.0",
       "dependencies": {
         "mediabunny": "^1.0.0",
@@ -150,7 +150,7 @@
 
     "@types/node": ["@types/node@20.19.25", "", { "dependencies": { "undici-types": "~6.21.0" } }, "sha512-ZsJzA5thDQMSQO788d7IocwwQbI8B5OPzmqNvpf3NY/+MHDAS759Wo0gd2WQeXYt5AAAQjzcrTVC6SKCuYgoCQ=="],
 
-    "@vidtreo/example": ["@vidtreo/example@workspace:packages/recorder"],
+    "@vidtreo/recorder": ["@vidtreo/recorder@workspace:packages/recorder"],
 
     "ansi-regex": ["ansi-regex@6.2.2", "", {}, "sha512-Bq3SmSpyFHaWjPk8If9yc6svM8c56dB5BAtW4Qbw5jHTwwXXcTLoRMkpDJp6VL0XzlWaCHTXrkFURMYmD0sLqg=="],
 
