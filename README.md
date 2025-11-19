@@ -42,8 +42,17 @@ bun run build:js
 # Build only TypeScript declarations
 bun run build:types
 
-# Run tests
+# Run all tests (lightning fast with parallel execution)
 bun run test
+
+# Run tests in watch mode
+bun run test:watch
+
+# Run tests with coverage
+bun run test:coverage
+
+# Run tests for specific packages
+bun run test:packages
 
 # Lint code
 bun run lint
@@ -90,6 +99,54 @@ Each package should have these scripts:
   }
 }
 ```
+
+## Testing
+
+This monorepo uses Bun's native test runner for lightning-fast test execution:
+
+### Features
+
+1. **Parallel Execution**: Tests run concurrently across all test files by default
+2. **Native Speed**: Bun's test runner is built-in and optimized for performance
+3. **TypeScript Support**: Full TypeScript support without compilation step
+4. **Coverage**: Built-in code coverage support
+5. **Watch Mode**: Automatic test re-running on file changes
+
+### Test Structure
+
+```
+packages/
+  └── example/
+      └── tests/
+          ├── setup.ts          # Global test setup
+          ├── unit/             # Unit tests
+          │   └── *.test.ts
+          ├── integration/      # Integration tests
+          │   └── *.test.ts
+          └── helpers/          # Test utilities
+              └── test-utils.ts
+```
+
+### Writing Tests
+
+Tests use Bun's native `bun:test` API:
+
+```typescript
+import { describe, expect, test } from "bun:test";
+
+describe("MyFeature", () => {
+  test("should work correctly", () => {
+    expect(true).toBe(true);
+  });
+});
+```
+
+### Test Configuration
+
+Test configuration is in `bunfig.toml`:
+- `concurrent = true`: Run tests in parallel
+- `maxConcurrency = 20`: Maximum concurrent tests
+- `timeout = 30000`: Test timeout (30 seconds)
 
 ## Publishing
 

@@ -1,0 +1,14 @@
+# Bun configuration for example package
+# This enables path alias resolution from tsconfig.json
+
+[install]
+exact = false
+production = false
+peer = true
+optional = true
+dev = true
+
+[test]
+concurrent = true
+maxConcurrency = 20
+timeout = 30000

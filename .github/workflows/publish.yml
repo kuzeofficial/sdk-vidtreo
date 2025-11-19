@@ -41,6 +41,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --no-save
 
+      - name: Run tests
+        run: bun test --concurrent || exit 1
+
       - name: Build packages (parallel)
         run: |
           # Build all packages in parallel using Bun's native parallel execution

@@ -13,3 +13,20 @@ optional = true
 # Install dev dependencies
 dev = true
 
+[test]
+# Enable concurrent test execution for maximum speed
+# Tests run in parallel across all test files
+concurrent = true
+# Maximum number of concurrent tests (default: 20)
+maxConcurrency = 20
+# Test timeout in milliseconds (default: 5000)
+timeout = 30000
+# Glob patterns for tests that should run concurrently
+# All test files run concurrently by default when concurrent = true
+concurrentTestGlob = [
+  "**/*.test.ts",
+  "**/*.test.tsx",
+  "**/*.spec.ts",
+  "**/*.spec.tsx"
+]
+
