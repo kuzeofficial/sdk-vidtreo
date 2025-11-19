@@ -1,4 +1,4 @@
-import { DEFAULT_TRANSCODE_CONFIG, transcodeVideo } from "@vidtreo/example";
+import { DEFAULT_TRANSCODE_CONFIG, transcodeVideo } from "@vidtreo/recorder";
 
 const FILE_EXTENSION_REGEX = /\.[^/.]+$/;
 

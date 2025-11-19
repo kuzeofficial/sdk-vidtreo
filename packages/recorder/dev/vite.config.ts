@@ -15,7 +15,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@vidtreo/example": resolve(__dirname, "../src"),
+      "@vidtreo/recorder": resolve(__dirname, "../src"),
     },
   },
   build: {

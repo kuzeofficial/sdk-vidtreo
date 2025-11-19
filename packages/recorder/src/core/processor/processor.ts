@@ -18,7 +18,9 @@ function createSource(input: TranscodeInput): BlobSource | FilePathSource {
   if (input instanceof Blob) {
     return new BlobSource(input);
   }
-  throw new Error("Invalid input type. Expected Blob, File, or file path string.");
+  throw new Error(
+    "Invalid input type. Expected Blob, File, or file path string."
+  );
 }
 
 function createConversionOptions(config: TranscodeConfig) {
@@ -39,7 +41,9 @@ function createConversionOptions(config: TranscodeConfig) {
 
 function validateConversion(conversion: Conversion): void {
   if (!conversion.isValid) {
-    const reasons = conversion.discardedTracks.map((track) => track.reason).join(", ");
+    const reasons = conversion.discardedTracks
+      .map((track) => track.reason)
+      .join(", ");
     throw new Error(`Conversion is invalid. Discarded tracks: ${reasons}`);
   }
 }
