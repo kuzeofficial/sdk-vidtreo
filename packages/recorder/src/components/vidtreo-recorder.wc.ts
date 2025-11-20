@@ -1,21 +1,40 @@
 import { DEFAULT_TRANSCODE_CONFIG } from "../core/processor/config";
 import { transcodeVideo } from "../core/processor/processor";
+import { CameraStreamManager } from "../core/stream/stream";
 import "../styles/tailwind.css";
 
 export class VidtreoRecorder extends HTMLElement {
-  private mediaStream: MediaStream | null = null;
-  private mediaRecorder: MediaRecorder | null = null;
-  private recordedChunks: Blob[] = [];
+  private readonly streamManager: CameraStreamManager;
   private recordedBlob: Blob | null = null;
   private processedBlob: Blob | null = null;
-  private isRecording = false;
   private isProcessing = false;
-  private recordingStartTime = 0;
-  private recordingTimer: number | null = null;
 
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
+    this.streamManager = new CameraStreamManager();
+    // Setup event listeners
+    this.streamManager.on("statechange", ({ state, previousState }) => {
+      this.handleStateChange(state, previousState);
+    });
+    this.streamManager.on("streamstart", ({ stream }) => {
+      this.handleStreamStart(stream);
+    });
+    this.streamManager.on("streamstop", () => {
+      this.handleStreamStop();
+    });
+    this.streamManager.on("recordingstart", () => {
+      this.handleRecordingStart();
+    });
+    this.streamManager.on("recordingstop", ({ blob }) => {
+      this.handleRecordingStop(blob);
+    });
+    this.streamManager.on("recordingtimeupdate", ({ formatted }) => {
+      this.updateRecordingTimer(formatted);
+    });
+    this.streamManager.on("error", ({ error }) => {
+      this.showError(error.message);
+    });
     this.render();
     this.attachEventListeners();
   }
@@ -30,10 +49,7 @@ export class VidtreoRecorder extends HTMLElement {
   }
 
   disconnectedCallback(): void {
-    this.stopCamera();
-    if (this.recordingTimer !== null) {
-      clearInterval(this.recordingTimer);
-    }
+    this.streamManager.destroy();
   }
 
   private get shadow(): ShadowRoot {
@@ -51,12 +67,6 @@ export class VidtreoRecorder extends HTMLElement {
     const sizes = ["Bytes", "KB", "MB", "GB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${Math.round((bytes / k ** i) * 100) / 100} ${sizes[i]}`;
-  }
-
-  private formatTime(seconds: number): string {
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.floor(seconds % 60);
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   }
 
   private showError(message: string): void {
@@ -123,105 +133,55 @@ export class VidtreoRecorder extends HTMLElement {
     }
   }
 
-  private updateRecordingTime(): void {
+  private updateRecordingTimer(formatted: string): void {
     const timerEl = this.shadow.querySelector("#recordingTimer") as HTMLElement;
-    if (timerEl && this.isRecording) {
-      const elapsed = (Date.now() - this.recordingStartTime) / 1000;
-      timerEl.textContent = this.formatTime(elapsed);
+    if (timerEl) {
+      timerEl.textContent = formatted;
     }
   }
 
-  private async startCamera(): Promise<void> {
-    try {
-      // Show loading state
-      const startCameraArea = this.shadow.querySelector(
-        "#startCameraArea"
-      ) as HTMLElement;
-      if (startCameraArea) {
-        startCameraArea.classList.add("loading");
-      }
-
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: DEFAULT_TRANSCODE_CONFIG.width },
-          height: { ideal: DEFAULT_TRANSCODE_CONFIG.height },
-          frameRate: { ideal: DEFAULT_TRANSCODE_CONFIG.fps },
-        },
-        audio: true,
-      });
-
-      const videoPreview = this.shadow.querySelector(
-        "#videoPreview"
-      ) as HTMLVideoElement;
-      if (videoPreview) {
-        videoPreview.srcObject = this.mediaStream;
-        videoPreview.play();
-      }
-
-      const startButton = this.shadow.querySelector(
-        "#startButton"
-      ) as HTMLButtonElement;
-      const stopButton = this.shadow.querySelector(
-        "#stopButton"
-      ) as HTMLButtonElement;
-      const cameraArea = this.shadow.querySelector(
-        "#cameraArea"
-      ) as HTMLElement;
-
-      if (startButton) {
-        startButton.disabled = false;
-      }
-      if (stopButton) {
-        stopButton.disabled = true;
-      }
-      if (cameraArea) {
-        cameraArea.classList.add("active");
-      }
-
-      // Hide start camera area once camera is active
-      if (startCameraArea) {
-        startCameraArea.style.display = "none";
-      }
-
+  private handleStateChange(state: string, previousState: string): void {
+    // Handle UI updates based on state changes
+    if (state === "active" && previousState === "starting") {
       this.hideError();
-    } catch (error) {
-      // Show error and keep start camera area visible for retry
-      const startCameraArea = this.shadow.querySelector(
-        "#startCameraArea"
-      ) as HTMLElement;
-      const startCameraButton = this.shadow.querySelector(
-        "#startCameraButton"
-      ) as HTMLButtonElement;
-      const cameraText = startCameraArea?.querySelector(
-        ".camera-text"
-      ) as HTMLElement;
-
-      if (startCameraArea) {
-        startCameraArea.classList.remove("loading");
-        startCameraArea.style.display = "block";
-      }
-      if (startCameraButton) {
-        startCameraButton.style.display = "block";
-      }
-      if (cameraText) {
-        cameraText.textContent = "Failed to start camera";
-      }
-      this.showError(
-        error instanceof Error
-          ? error.message
-          : "Failed to access camera. Please ensure you have granted camera permissions."
-      );
     }
   }
 
-  private stopCamera(): void {
-    if (this.mediaStream) {
-      for (const track of this.mediaStream.getTracks()) {
-        track.stop();
-      }
-      this.mediaStream = null;
+  private handleStreamStart(stream: MediaStream): void {
+    const videoPreview = this.shadow.querySelector(
+      "#videoPreview"
+    ) as HTMLVideoElement;
+    if (videoPreview) {
+      videoPreview.srcObject = stream;
+      videoPreview.play();
     }
 
+    const startButton = this.shadow.querySelector(
+      "#startButton"
+    ) as HTMLButtonElement;
+    const stopButton = this.shadow.querySelector(
+      "#stopButton"
+    ) as HTMLButtonElement;
+    const cameraArea = this.shadow.querySelector("#cameraArea") as HTMLElement;
+    const startCameraArea = this.shadow.querySelector(
+      "#startCameraArea"
+    ) as HTMLElement;
+
+    if (startButton) {
+      startButton.disabled = false;
+    }
+    if (stopButton) {
+      stopButton.disabled = true;
+    }
+    if (cameraArea) {
+      cameraArea.classList.add("active");
+    }
+    if (startCameraArea) {
+      startCameraArea.style.display = "none";
+    }
+  }
+
+  private handleStreamStop(): void {
     const videoPreview = this.shadow.querySelector(
       "#videoPreview"
     ) as HTMLVideoElement;
@@ -235,38 +195,7 @@ export class VidtreoRecorder extends HTMLElement {
     }
   }
 
-  private startRecording(): void {
-    if (!this.mediaStream) {
-      throw new Error("Camera not started");
-    }
-
-    this.recordedChunks = [];
-    const options = { mimeType: "video/webm;codecs=vp9,opus" };
-
-    try {
-      this.mediaRecorder = new MediaRecorder(this.mediaStream, options);
-    } catch (_error) {
-      // Fallback to default mimeType if the preferred one is not supported
-      this.mediaRecorder = new MediaRecorder(this.mediaStream);
-    }
-
-    this.mediaRecorder.ondataavailable = (event: BlobEvent) => {
-      if (event.data && event.data.size > 0) {
-        this.recordedChunks.push(event.data);
-      }
-    };
-
-    this.mediaRecorder.onstop = () => {
-      this.recordedBlob = new Blob(this.recordedChunks, {
-        type: this.mediaRecorder?.mimeType || "video/webm",
-      });
-      this.updateRecordingInfo();
-    };
-
-    this.mediaRecorder.start();
-    this.isRecording = true;
-    this.recordingStartTime = Date.now();
-
+  private handleRecordingStart(): void {
     const startButton = this.shadow.querySelector(
       "#startButton"
     ) as HTMLButtonElement;
@@ -293,26 +222,12 @@ export class VidtreoRecorder extends HTMLElement {
       recordingTimer.textContent = "00:00";
     }
 
-    this.recordingTimer = window.setInterval(() => {
-      this.updateRecordingTime();
-    }, 1000);
-
     this.hideError();
     this.hideResult();
   }
 
-  private stopRecording(): void {
-    if (!(this.mediaRecorder && this.isRecording)) {
-      return;
-    }
-
-    this.mediaRecorder.stop();
-    this.isRecording = false;
-
-    if (this.recordingTimer !== null) {
-      clearInterval(this.recordingTimer);
-      this.recordingTimer = null;
-    }
+  private handleRecordingStop(blob: Blob): void {
+    this.recordedBlob = blob;
 
     const startButton = this.shadow.querySelector(
       "#startButton"
@@ -336,13 +251,67 @@ export class VidtreoRecorder extends HTMLElement {
     if (recordingIndicator) {
       recordingIndicator.classList.remove("active");
     }
-    if (processButton && this.recordedBlob) {
+    if (processButton) {
       processButton.disabled = false;
+    }
+
+    this.updateRecordingInfo();
+  }
+
+  private async startCamera(): Promise<void> {
+    // Show loading state
+    const startCameraArea = this.shadow.querySelector(
+      "#startCameraArea"
+    ) as HTMLElement;
+    if (startCameraArea) {
+      startCameraArea.classList.add("loading");
+    }
+
+    try {
+      await this.streamManager.startStream();
+    } catch (_error) {
+      // Show error and keep start camera area visible for retry
+      const errorCameraArea = this.shadow.querySelector(
+        "#startCameraArea"
+      ) as HTMLElement;
+      const startCameraButton = this.shadow.querySelector(
+        "#startCameraButton"
+      ) as HTMLButtonElement;
+      const cameraText = errorCameraArea?.querySelector(
+        ".camera-text"
+      ) as HTMLElement;
+
+      if (errorCameraArea) {
+        errorCameraArea.classList.remove("loading");
+        errorCameraArea.style.display = "block";
+      }
+      if (startCameraButton) {
+        startCameraButton.style.display = "block";
+      }
+      if (cameraText) {
+        cameraText.textContent = "Failed to start camera";
+      }
+      // Error is already shown via event listener
     }
   }
 
+  private startRecording(): void {
+    try {
+      this.streamManager.startRecording();
+    } catch (error) {
+      this.showError(
+        error instanceof Error ? error.message : "Failed to start recording"
+      );
+    }
+  }
+
+  private stopRecording(): void {
+    this.streamManager.stopRecording();
+  }
+
   private updateRecordingInfo(): void {
-    if (!this.recordedBlob) {
+    const blob = this.recordedBlob || this.streamManager.getRecordedBlob();
+    if (!blob) {
       return;
     }
 
@@ -357,14 +326,7 @@ export class VidtreoRecorder extends HTMLElement {
       recordingInfo.classList.add("active");
     }
     if (recordingSize) {
-      recordingSize.textContent = `Size: ${this.formatFileSize(this.recordedBlob.size)}`;
-    }
-
-    const processButton = this.shadow.querySelector(
-      "#processButton"
-    ) as HTMLButtonElement;
-    if (processButton) {
-      processButton.disabled = false;
+      recordingSize.textContent = `Size: ${this.formatFileSize(blob.size)}`;
     }
   }
 
