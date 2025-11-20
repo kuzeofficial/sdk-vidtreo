@@ -1,5 +1,7 @@
 import { DEFAULT_TRANSCODE_CONFIG } from "../core/processor/config";
 import { transcodeVideo } from "../core/processor/processor";
+import { StreamProcessor } from "../core/processor/stream-processor";
+import { DEFAULT_STREAM_CONFIG } from "../core/stream/config";
 import { CameraStreamManager } from "../core/stream/stream";
 import "../styles/tailwind.css";
 
@@ -8,6 +10,10 @@ export class VidtreoRecorder extends HTMLElement {
   private recordedBlob: Blob | null = null;
   private processedBlob: Blob | null = null;
   private isProcessing = false;
+  private streamProcessor: StreamProcessor | null = null;
+  private currentSourceType: "camera" | "screen" = "camera";
+  private originalCameraStream: MediaStream | null = null;
+  private screenShareTrackEndHandler: (() => void) | null = null;
 
   constructor() {
     super();
@@ -31,6 +37,24 @@ export class VidtreoRecorder extends HTMLElement {
     });
     this.streamManager.on("recordingtimeupdate", ({ formatted }) => {
       this.updateRecordingTimer(formatted);
+    });
+    this.streamManager.on("recordingbufferupdate", ({ formatted }) => {
+      this.updateBufferSize(formatted);
+    });
+    this.streamManager.on("audiomutetoggle", ({ muted }) => {
+      this.updateMuteState(muted);
+    });
+    this.streamManager.on("videosourcechange", ({ stream }) => {
+      // Update preview video element when source changes in real-time
+      const videoPreview = this.shadow.querySelector(
+        "#videoPreview"
+      ) as HTMLVideoElement;
+      if (videoPreview) {
+        videoPreview.srcObject = stream;
+        videoPreview.play().catch((error) => {
+          console.warn("Failed to play preview video:", error);
+        });
+      }
     });
     this.streamManager.on("error", ({ error }) => {
       this.showError(error.message);
@@ -140,6 +164,25 @@ export class VidtreoRecorder extends HTMLElement {
     }
   }
 
+  private updateBufferSize(formatted: string): void {
+    const recordingSize = this.shadow.querySelector(
+      "#recordingSize"
+    ) as HTMLElement;
+    if (recordingSize) {
+      recordingSize.textContent = `Size: ${formatted}`;
+    }
+  }
+
+  private updateMuteState(muted: boolean): void {
+    const muteButton = this.shadow.querySelector(
+      "#muteButton"
+    ) as HTMLButtonElement;
+    if (muteButton) {
+      muteButton.textContent = muted ? "🔇 Unmute" : "🔊 Mute";
+      muteButton.classList.toggle("muted", muted);
+    }
+  }
+
   private handleStateChange(state: string, previousState: string): void {
     // Handle UI updates based on state changes
     if (state === "active" && previousState === "starting") {
@@ -208,6 +251,9 @@ export class VidtreoRecorder extends HTMLElement {
     const recordingTimer = this.shadow.querySelector(
       "#recordingTimer"
     ) as HTMLElement;
+    const recordingInfo = this.shadow.querySelector(
+      "#recordingInfo"
+    ) as HTMLElement;
 
     if (startButton) {
       startButton.disabled = true;
@@ -222,13 +268,34 @@ export class VidtreoRecorder extends HTMLElement {
       recordingTimer.textContent = "00:00";
     }
 
+    // Show recording info to display buffer size
+    if (recordingInfo) {
+      recordingInfo.classList.add("active");
+    }
+
+    // Show mute button when recording starts
+    const muteButton = this.shadow.querySelector(
+      "#muteButton"
+    ) as HTMLButtonElement;
+    if (muteButton) {
+      muteButton.disabled = false;
+      muteButton.style.display = "block";
+    }
+
+    // Show switch source button when recording starts
+    const switchSourceButton = this.shadow.querySelector(
+      "#switchSourceButton"
+    ) as HTMLButtonElement;
+    if (switchSourceButton) {
+      switchSourceButton.disabled = false;
+      switchSourceButton.style.display = "block";
+    }
+
     this.hideError();
     this.hideResult();
   }
 
-  private handleRecordingStop(blob: Blob): void {
-    this.recordedBlob = blob;
-
+  private updateRecordingControlsAfterStop(): void {
     const startButton = this.shadow.querySelector(
       "#startButton"
     ) as HTMLButtonElement;
@@ -241,6 +308,12 @@ export class VidtreoRecorder extends HTMLElement {
     const processButton = this.shadow.querySelector(
       "#processButton"
     ) as HTMLButtonElement;
+    const muteButton = this.shadow.querySelector(
+      "#muteButton"
+    ) as HTMLButtonElement;
+    const switchSourceButton = this.shadow.querySelector(
+      "#switchSourceButton"
+    ) as HTMLButtonElement;
 
     if (startButton) {
       startButton.disabled = false;
@@ -252,10 +325,62 @@ export class VidtreoRecorder extends HTMLElement {
       recordingIndicator.classList.remove("active");
     }
     if (processButton) {
-      processButton.disabled = false;
+      processButton.style.display = "none";
+    }
+    if (muteButton) {
+      muteButton.disabled = true;
+      muteButton.style.display = "none";
+    }
+    if (switchSourceButton) {
+      switchSourceButton.disabled = true;
+      switchSourceButton.style.display = "none";
+    }
+  }
+
+  private handleScreenRecordingStop(): void {
+    const currentStream = this.streamManager.getStream();
+    if (currentStream) {
+      this.stopStreamTracks(currentStream);
+    }
+    this.streamManager.startStream().catch((error) => {
+      this.showError(
+        error instanceof Error ? error.message : "Failed to restart camera"
+      );
+    });
+  }
+
+  private cleanupScreenShareTrackHandler(): void {
+    if (!this.screenShareTrackEndHandler) {
+      return;
     }
 
+    const currentStream = this.streamManager.getStream();
+    if (currentStream) {
+      const videoTrack = currentStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.removeEventListener(
+          "ended",
+          this.screenShareTrackEndHandler
+        );
+      }
+    }
+    this.screenShareTrackEndHandler = null;
+  }
+
+  private handleRecordingStop(blob: Blob): void {
+    this.recordedBlob = blob;
+    this.updateRecordingControlsAfterStop();
+
+    if (this.currentSourceType === "screen") {
+      this.handleScreenRecordingStop();
+    }
+
+    this.currentSourceType = "camera";
+    this.originalCameraStream = null;
+    this.cleanupScreenShareTrackHandler();
+
     this.updateRecordingInfo();
+    this.streamProcessor = null;
   }
 
   private async startCamera(): Promise<void> {
@@ -295,9 +420,22 @@ export class VidtreoRecorder extends HTMLElement {
     }
   }
 
-  private startRecording(): void {
+  private async startRecording(): Promise<void> {
     try {
-      this.streamManager.startRecording();
+      // Store reference to original camera stream
+      const currentStream = this.streamManager.getStream();
+      if (currentStream) {
+        this.originalCameraStream = currentStream;
+      }
+
+      // Create StreamProcessor instance
+      this.streamProcessor = new StreamProcessor();
+
+      // Start recording with mediabunny
+      await this.streamManager.startRecordingWithMediabunny(
+        this.streamProcessor,
+        DEFAULT_TRANSCODE_CONFIG
+      );
     } catch (error) {
       this.showError(
         error instanceof Error ? error.message : "Failed to start recording"
@@ -305,8 +443,22 @@ export class VidtreoRecorder extends HTMLElement {
     }
   }
 
-  private stopRecording(): void {
-    this.streamManager.stopRecording();
+  private async stopRecording(): Promise<void> {
+    try {
+      // Stop mediabunny recording and get final blob
+      const blob = await this.streamManager.stopRecordingWithMediabunny();
+
+      // Blob is already processed! No need for separate processing step
+      this.processedBlob = blob;
+      this.recordedBlob = blob;
+
+      // Show result immediately
+      this.showResult(blob.size, blob.size);
+    } catch (error) {
+      this.showError(
+        error instanceof Error ? error.message : "Failed to stop recording"
+      );
+    }
   }
 
   private updateRecordingInfo(): void {
@@ -427,6 +579,269 @@ export class VidtreoRecorder extends HTMLElement {
     `);
   }
 
+  private stopStreamTracks(stream: MediaStream): void {
+    for (const track of stream.getTracks()) {
+      if (track.readyState === "live") {
+        track.stop();
+      }
+    }
+  }
+
+  private async switchToScreenCapture(): Promise<MediaStream> {
+    const currentStream = this.streamManager.getStream();
+    if (currentStream) {
+      this.originalCameraStream = currentStream;
+    }
+
+    this.showSourceTransition("Select screen to share...");
+
+    const newStream = await navigator.mediaDevices.getDisplayMedia({
+      video: true,
+      audio: true,
+    });
+
+    if (currentStream) {
+      this.stopStreamTracks(currentStream);
+    }
+
+    this.hideSourceTransition();
+    this.currentSourceType = "screen";
+
+    return newStream;
+  }
+
+  private setupScreenShareTrackHandler(newStream: MediaStream): void {
+    const videoTrack = newStream.getVideoTracks()[0];
+    if (!videoTrack) {
+      return;
+    }
+
+    // Remove previous handler if exists
+    if (this.screenShareTrackEndHandler) {
+      const oldStream = this.streamManager.getStream();
+      if (oldStream) {
+        const oldVideoTrack = oldStream.getVideoTracks()[0];
+        if (oldVideoTrack) {
+          oldVideoTrack.removeEventListener(
+            "ended",
+            this.screenShareTrackEndHandler
+          );
+        }
+      }
+    }
+
+    // Create handler to switch back to camera when screen share ends
+    this.screenShareTrackEndHandler = () => {
+      if (
+        this.streamManager.isRecording() &&
+        this.currentSourceType === "screen"
+      ) {
+        this.switchToCamera().catch((error) => {
+          console.error("Failed to switch back to camera:", error);
+          this.showError(
+            error instanceof Error
+              ? error.message
+              : "Failed to switch back to camera"
+          );
+        });
+      }
+    };
+
+    videoTrack.addEventListener("ended", this.screenShareTrackEndHandler);
+  }
+
+  private async updatePreviewAfterSourceSwitch(
+    newStream: MediaStream
+  ): Promise<void> {
+    const videoPreview = this.shadow.querySelector(
+      "#videoPreview"
+    ) as HTMLVideoElement;
+    if (!videoPreview) {
+      return;
+    }
+
+    videoPreview.srcObject = newStream;
+
+    await new Promise<void>((resolve, reject) => {
+      const onLoadedMetadata = () => {
+        videoPreview.removeEventListener("loadedmetadata", onLoadedMetadata);
+        videoPreview.removeEventListener("error", onError);
+        videoPreview
+          .play()
+          .then(() => {
+            this.hideSourceTransition();
+            resolve();
+          })
+          .catch(reject);
+      };
+      const onError = () => {
+        videoPreview.removeEventListener("loadedmetadata", onLoadedMetadata);
+        videoPreview.removeEventListener("error", onError);
+        this.hideSourceTransition();
+        reject(new Error("Failed to load preview"));
+      };
+
+      if (videoPreview.readyState >= 2) {
+        videoPreview
+          .play()
+          .then(() => {
+            this.hideSourceTransition();
+            resolve();
+          })
+          .catch(reject);
+        return;
+      }
+
+      videoPreview.addEventListener("loadedmetadata", onLoadedMetadata);
+      videoPreview.addEventListener("error", onError);
+    });
+  }
+
+  private updateSwitchButtonText(): void {
+    const switchButton = this.shadow.querySelector(
+      "#switchSourceButton"
+    ) as HTMLButtonElement;
+    if (switchButton) {
+      switchButton.textContent =
+        this.currentSourceType === "camera"
+          ? "🔄 Switch to Screen"
+          : "🔄 Switch to Camera";
+    }
+  }
+
+  /**
+   * Toggle between camera and screen capture during recording
+   */
+  private async toggleSource(): Promise<void> {
+    if (!this.streamManager.isRecording()) {
+      return;
+    }
+
+    try {
+      if (this.currentSourceType === "camera") {
+        const newStream = await this.switchToScreenCapture();
+        this.setupScreenShareTrackHandler(newStream);
+        this.showSourceTransition("Switching to screen...");
+        await this.streamManager.switchVideoSource(newStream);
+        await this.updatePreviewAfterSourceSwitch(newStream);
+        this.updateSwitchButtonText();
+      } else {
+        await this.switchToCamera();
+      }
+    } catch (error) {
+      this.hideSourceTransition();
+      if (this.currentSourceType === "camera" && this.originalCameraStream) {
+        this.originalCameraStream = null;
+      }
+      this.showError(
+        error instanceof Error ? error.message : "Failed to switch source"
+      );
+    }
+  }
+
+  private async getCameraStream(): Promise<MediaStream> {
+    if (this.originalCameraStream) {
+      const videoTrack = this.originalCameraStream.getVideoTracks()[0];
+      const audioTrack = this.originalCameraStream.getAudioTracks()[0];
+
+      if (
+        videoTrack &&
+        videoTrack.readyState === "live" &&
+        audioTrack &&
+        audioTrack.readyState === "live"
+      ) {
+        return this.originalCameraStream;
+      }
+    }
+
+    const newStream = await navigator.mediaDevices.getUserMedia(
+      DEFAULT_STREAM_CONFIG
+    );
+    this.originalCameraStream = newStream;
+    return newStream;
+  }
+
+  private removeScreenShareTrackHandler(stream: MediaStream | null): void {
+    if (!(this.screenShareTrackEndHandler && stream)) {
+      return;
+    }
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+      videoTrack.removeEventListener("ended", this.screenShareTrackEndHandler);
+    }
+    this.screenShareTrackEndHandler = null;
+  }
+
+  /**
+   * Switch back to camera (used by both manual toggle and automatic switch)
+   */
+  private async switchToCamera(): Promise<void> {
+    if (!this.streamManager.isRecording()) {
+      return;
+    }
+
+    try {
+      this.showSourceTransition("Switching to camera...");
+
+      const currentStream = this.streamManager.getStream();
+      if (currentStream) {
+        this.stopStreamTracks(currentStream);
+      }
+
+      this.removeScreenShareTrackHandler(currentStream);
+
+      const newStream = await this.getCameraStream();
+      this.streamManager.setMediaStream(newStream);
+      this.currentSourceType = "camera";
+
+      await this.streamManager.switchVideoSource(newStream);
+      await this.updatePreviewAfterSourceSwitch(newStream);
+      this.updateSwitchButtonText();
+    } catch (error) {
+      this.hideSourceTransition();
+      this.showError(
+        error instanceof Error ? error.message : "Failed to switch to camera"
+      );
+    }
+  }
+
+  private showSourceTransition(message = "Switching source..."): void {
+    const videoPreview = this.shadow.querySelector(
+      "#videoPreview"
+    ) as HTMLVideoElement;
+    if (videoPreview) {
+      videoPreview.classList.add("transitioning");
+    }
+
+    const transitionOverlay = this.shadow.querySelector(
+      "#sourceTransitionOverlay"
+    ) as HTMLElement;
+    if (transitionOverlay) {
+      transitionOverlay.classList.add("active");
+      const messageEl = transitionOverlay.querySelector(".transition-message");
+      if (messageEl) {
+        messageEl.textContent = message;
+      }
+    }
+  }
+
+  private hideSourceTransition(): void {
+    const videoPreview = this.shadow.querySelector(
+      "#videoPreview"
+    ) as HTMLVideoElement;
+    if (videoPreview) {
+      videoPreview.classList.remove("transitioning");
+    }
+
+    const transitionOverlay = this.shadow.querySelector(
+      "#sourceTransitionOverlay"
+    ) as HTMLElement;
+    if (transitionOverlay) {
+      transitionOverlay.classList.remove("active");
+    }
+  }
+
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Called in constructor
   private attachEventListeners(): void {
     const startCameraButton = this.shadow.querySelector("#startCameraButton");
@@ -449,27 +864,52 @@ export class VidtreoRecorder extends HTMLElement {
 
     if (startButton) {
       startButton.addEventListener("click", () => {
-        try {
-          this.startRecording();
-        } catch (error) {
+        this.startRecording().catch((error) => {
           this.showError(
             error instanceof Error ? error.message : "Failed to start recording"
           );
-        }
+        });
       });
     }
 
     if (stopButton) {
       stopButton.addEventListener("click", () => {
-        this.stopRecording();
+        this.stopRecording().catch((error) => {
+          this.showError(
+            error instanceof Error ? error.message : "Failed to stop recording"
+          );
+        });
       });
     }
 
+    // Process button is hidden when using mediabunny (processing happens during recording)
+    // Keep it for fallback to old method if needed
     if (processButton) {
+      (processButton as HTMLElement).style.display = "none";
       processButton.addEventListener("click", () => {
         this.processVideo().catch((error) => {
           this.showError(
             error instanceof Error ? error.message : "Failed to process video"
+          );
+        });
+      });
+    }
+
+    // Mute button
+    const muteButton = this.shadow.querySelector("#muteButton");
+    if (muteButton) {
+      muteButton.addEventListener("click", () => {
+        this.streamManager.toggleMute();
+      });
+    }
+
+    // Switch source button
+    const switchSourceButton = this.shadow.querySelector("#switchSourceButton");
+    if (switchSourceButton) {
+      switchSourceButton.addEventListener("click", () => {
+        this.toggleSource().catch((error) => {
+          this.showError(
+            error instanceof Error ? error.message : "Failed to switch source"
           );
         });
       });
@@ -540,6 +980,60 @@ export class VidtreoRecorder extends HTMLElement {
           position: relative;
         }
 
+        .source-transition-overlay {
+          position: absolute;
+          top: 20px;
+          left: 20px;
+          right: 20px;
+          bottom: 20px;
+          background: rgba(0, 0, 0, 0.7);
+          display: none;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          border-radius: 8px;
+          z-index: 10;
+          backdrop-filter: blur(4px);
+          transition: opacity 0.3s ease;
+        }
+
+        .source-transition-overlay.active {
+          display: flex;
+          animation: fadeIn 0.2s ease;
+        }
+
+        @keyframes fadeIn {
+          from {
+            opacity: 0;
+          }
+          to {
+            opacity: 1;
+          }
+        }
+
+        .transition-spinner {
+          width: 40px;
+          height: 40px;
+          border: 4px solid rgba(255, 255, 255, 0.3);
+          border-top-color: #667eea;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+          margin-bottom: 12px;
+        }
+
+        @keyframes spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+
+        .transition-message {
+          color: white;
+          font-size: 14px;
+          font-weight: 500;
+          text-align: center;
+        }
+
         .camera-area.active {
           display: block;
         }
@@ -550,6 +1044,13 @@ export class VidtreoRecorder extends HTMLElement {
           background: #000;
           display: block;
           margin-bottom: 16px;
+          transition: opacity 0.3s ease, transform 0.3s ease;
+          position: relative;
+        }
+
+        .video-preview.transitioning {
+          opacity: 0.5;
+          transform: scale(0.98);
         }
 
         .recording-controls {
@@ -692,6 +1193,10 @@ export class VidtreoRecorder extends HTMLElement {
           background: linear-gradient(135deg, #f56565 0%, #e53e3e 100%);
         }
 
+        .recording-controls button.muted {
+          background: linear-gradient(135deg, #a0a0a0 0%, #808080 100%);
+        }
+
         .progress {
           margin-top: 20px;
           display: none;
@@ -787,9 +1292,15 @@ export class VidtreoRecorder extends HTMLElement {
 
         <div class="camera-area" id="cameraArea">
           <video id="videoPreview" class="video-preview" autoplay muted playsinline></video>
+          <div class="source-transition-overlay" id="sourceTransitionOverlay">
+            <div class="transition-spinner"></div>
+            <div class="transition-message">Switching source...</div>
+          </div>
           <div class="recording-controls">
             <button id="startButton" disabled>Start Recording</button>
             <button id="stopButton" disabled>Stop Recording</button>
+            <button id="muteButton" disabled style="display: none;">🔊 Mute</button>
+            <button id="switchSourceButton" disabled style="display: none;">🔄 Switch to Screen</button>
           </div>
           <div class="recording-indicator" id="recordingIndicator">
             <div class="recording-dot"></div>

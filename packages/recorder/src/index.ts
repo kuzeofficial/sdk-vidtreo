@@ -1,6 +1,9 @@
 export { DEFAULT_TRANSCODE_CONFIG } from "./core/processor/config";
 export { transcodeVideo } from "./core/processor/processor";
+export { StreamProcessor } from "./core/processor/stream-processor";
 export type {
+  StreamProcessorOptions,
+  StreamProcessorResult,
   TranscodeConfig,
   TranscodeInput,
   TranscodeResult,

@@ -1,3 +1,5 @@
+import type { StreamProcessor } from "../processor/stream-processor";
+import type { TranscodeConfig } from "../processor/types";
 import { DEFAULT_RECORDING_OPTIONS, DEFAULT_STREAM_CONFIG } from "./config";
 import type {
   RecordingOptions,
@@ -20,6 +22,8 @@ export class CameraStreamManager {
   > = new Map();
   private readonly streamConfig: StreamConfig;
   private readonly recordingOptions: RecordingOptions;
+  private streamProcessor: StreamProcessor | null = null;
+  private bufferSizeUpdateInterval: number | null = null;
 
   constructor(
     streamConfig: Partial<StreamConfig> = {},
@@ -277,6 +281,155 @@ export class CameraStreamManager {
   }
 
   /**
+   * Start recording with mediabunny (real-time processing)
+   */
+  async startRecordingWithMediabunny(
+    processor: StreamProcessor,
+    config: TranscodeConfig
+  ): Promise<void> {
+    if (!this.mediaStream) {
+      throw new Error("Stream must be started before recording");
+    }
+
+    if (this.isRecording()) {
+      return;
+    }
+
+    this.streamProcessor = processor;
+
+    // Start mediabunny processing
+    await processor.startProcessing(this.mediaStream, config);
+
+    // Set up buffer size tracking
+    this.bufferSizeUpdateInterval = window.setInterval(() => {
+      if (this.streamProcessor) {
+        const size = this.streamProcessor.getBufferSize();
+        const formatted = this.formatFileSize(size);
+        this.emit("recordingbufferupdate", { size, formatted });
+      }
+    }, 1000); // Update every second
+
+    // Set up mute state change forwarding
+    processor.setOnMuteStateChange((muted: boolean) => {
+      this.emit("audiomutetoggle", { muted });
+    });
+
+    // Set up source change forwarding
+    processor.setOnSourceChange((stream: MediaStream) => {
+      this.emit("videosourcechange", { stream });
+    });
+
+    this.recordingStartTime = Date.now();
+    this.setState("recording");
+
+    this.emit("recordingstart", { recorder: null });
+
+    // Start timer for recording time updates
+    this.recordingTimer = window.setInterval(() => {
+      const elapsed = (Date.now() - this.recordingStartTime) / 1000;
+      const mins = Math.floor(elapsed / 60);
+      const secs = Math.floor(elapsed % 60);
+      const formatted = `${mins.toString().padStart(2, "0")}:${secs
+        .toString()
+        .padStart(2, "0")}`;
+
+      this.emit("recordingtimeupdate", { elapsed, formatted });
+    }, 1000);
+  }
+
+  /**
+   * Stop recording with mediabunny
+   */
+  async stopRecordingWithMediabunny(): Promise<Blob> {
+    if (!(this.streamProcessor && this.isRecording())) {
+      throw new Error("Not recording with mediabunny");
+    }
+
+    this.setState("stopping");
+
+    // Stop timers
+    if (this.recordingTimer !== null) {
+      clearInterval(this.recordingTimer);
+      this.recordingTimer = null;
+    }
+
+    if (this.bufferSizeUpdateInterval !== null) {
+      clearInterval(this.bufferSizeUpdateInterval);
+      this.bufferSizeUpdateInterval = null;
+    }
+
+    // Finalize mediabunny processing
+    const result = await this.streamProcessor.finalize();
+
+    this.setState("active");
+    this.emit("recordingstop", {
+      blob: result.blob,
+      mimeType: "video/mp4",
+    });
+
+    this.streamProcessor = null;
+    return result.blob;
+  }
+
+  /**
+   * Toggle mute during recording
+   */
+  toggleMute(): void {
+    if (this.streamProcessor) {
+      this.streamProcessor.toggleMute();
+    }
+  }
+
+  /**
+   * Check if currently muted
+   */
+  isMuted(): boolean {
+    if (this.streamProcessor) {
+      return this.streamProcessor.isMutedState();
+    }
+    return false;
+  }
+
+  /**
+   * Switch video source during recording
+   */
+  async switchVideoSource(newStream: MediaStream): Promise<void> {
+    if (this.streamProcessor) {
+      await this.streamProcessor.switchVideoSource(newStream);
+    }
+  }
+
+  /**
+   * Set the media stream (used when switching sources)
+   */
+  setMediaStream(stream: MediaStream): void {
+    this.mediaStream = stream;
+  }
+
+  /**
+   * Get current video source
+   */
+  getCurrentVideoSource(): MediaStream | null {
+    if (this.streamProcessor) {
+      return this.streamProcessor.getCurrentVideoSource();
+    }
+    return null;
+  }
+
+  /**
+   * Format file size helper
+   */
+  private formatFileSize(bytes: number): string {
+    if (bytes === 0) {
+      return "0 Bytes";
+    }
+    const k = 1024;
+    const sizes = ["Bytes", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${Math.round((bytes / k ** i) * 100) / 100} ${sizes[i]}`;
+  }
+
+  /**
    * Get the recorded blob (available after stopRecording)
    */
   getRecordedBlob(): Blob | null {
@@ -293,11 +446,22 @@ export class CameraStreamManager {
    */
   destroy(): void {
     this.stopRecording();
+    if (this.streamProcessor) {
+      this.streamProcessor.cancel().catch(() => {
+        // Ignore errors during cleanup
+      });
+      this.streamProcessor = null;
+    }
     this.stopStream();
 
     if (this.recordingTimer !== null) {
       clearInterval(this.recordingTimer);
       this.recordingTimer = null;
+    }
+
+    if (this.bufferSizeUpdateInterval !== null) {
+      clearInterval(this.bufferSizeUpdateInterval);
+      this.bufferSizeUpdateInterval = null;
     }
 
     // Clear all event listeners
