@@ -1,4 +1,4 @@
-import type { TranscodeConfig } from "./types";
+import type { TranscodeConfig } from "../processor/types";
 
 export const DEFAULT_TRANSCODE_CONFIG: Readonly<TranscodeConfig> =
   Object.freeze({

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_TRANSCODE_CONFIG } from "@/core/processor/config";
+import { DEFAULT_TRANSCODE_CONFIG } from "@/core/config/default-config";
 import { transcodeVideo } from "@/core/processor/processor";
 
 describe("transcodeVideo", () => {
@@ -45,8 +45,10 @@ describe("transcodeVideo", () => {
     test("should accept Blob input", async () => {
       try {
         await transcodeVideo(testVideoBlob);
-      } catch (error: any) {
-        expect(error.message).not.toContain("Invalid input type");
+      } catch (error) {
+        if (error instanceof Error) {
+          expect(error.message).not.toContain("Invalid input type");
+        }
       }
     });
 
@@ -54,27 +56,27 @@ describe("transcodeVideo", () => {
       const file = new File([testVideoBlob], "test.mp4", { type: "video/mp4" });
       try {
         await transcodeVideo(file);
-      } catch (error: any) {
-        expect(error.message).not.toContain("Invalid input type");
+      } catch (error) {
+        if (error instanceof Error) {
+          expect(error.message).not.toContain("Invalid input type");
+        }
       }
     });
 
     test("should accept file path string", async () => {
       try {
         await transcodeVideo(testVideoPath);
-      } catch (error: any) {
-        expect(error.message).not.toContain("Invalid input type");
+      } catch (error) {
+        if (error instanceof Error) {
+          expect(error.message).not.toContain("Invalid input type");
+        }
       }
     });
   });
 
   describe("Configuration", () => {
     test("should use default config when no config provided", async () => {
-      try {
-        await transcodeVideo(testVideoBlob);
-      } catch (error: any) {
-        expect(error).toBeDefined();
-      }
+      await expect(transcodeVideo(testVideoBlob)).rejects.toThrow();
     });
 
     test("should merge partial config with defaults", async () => {
@@ -83,11 +85,9 @@ describe("transcodeVideo", () => {
         height: 1080,
       };
 
-      try {
-        await transcodeVideo(testVideoBlob, customConfig);
-      } catch (error: any) {
-        expect(error).toBeDefined();
-      }
+      await expect(
+        transcodeVideo(testVideoBlob, customConfig)
+      ).rejects.toThrow();
     });
 
     test("should allow overriding all config values", async () => {
@@ -102,26 +102,9 @@ describe("transcodeVideo", () => {
         packetCount: 2000,
       };
 
-      try {
-        await transcodeVideo(testVideoBlob, customConfig);
-      } catch (error: any) {
-        expect(error).toBeDefined();
-      }
-    });
-  });
-
-  describe("Output format", () => {
-    test("should return result with buffer and blob", async () => {
-      try {
-        const result = await transcodeVideo(testVideoBlob);
-        expect(result).toHaveProperty("buffer");
-        expect(result).toHaveProperty("blob");
-        expect(result.buffer).toBeInstanceOf(ArrayBuffer);
-        expect(result.blob).toBeInstanceOf(Blob);
-        expect(result.blob.type).toBe("video/mp4");
-      } catch (error) {
-        expect(error).toBeDefined();
-      }
+      await expect(
+        transcodeVideo(testVideoBlob, customConfig)
+      ).rejects.toThrow();
     });
   });
 

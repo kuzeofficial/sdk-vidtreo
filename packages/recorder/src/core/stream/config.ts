@@ -1,4 +1,4 @@
-import { DEFAULT_TRANSCODE_CONFIG } from "../processor/config";
+import { DEFAULT_TRANSCODE_CONFIG } from "../config/default-config";
 import type {
   CameraConstraints,
   RecordingOptions,

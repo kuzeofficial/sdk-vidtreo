@@ -8,7 +8,7 @@ import {
   Mp4OutputFormat,
   Output,
 } from "mediabunny";
-import { DEFAULT_TRANSCODE_CONFIG } from "./config";
+import { DEFAULT_TRANSCODE_CONFIG } from "../config/default-config";
 import type { TranscodeConfig, TranscodeInput, TranscodeResult } from "./types";
 
 function createSource(input: TranscodeInput): BlobSource | FilePathSource {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_TRANSCODE_CONFIG } from "@/core/processor/config";
+import { DEFAULT_TRANSCODE_CONFIG } from "@/core/config/default-config";
 
 describe("Default Transcode Config", () => {
   test("should have correct default values", () => {

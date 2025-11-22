@@ -9,10 +9,17 @@ import type {
   StreamState,
 } from "./types";
 
+const FILE_SIZE_UNITS = ["Bytes", "KB", "MB", "GB"] as const;
+const FILE_SIZE_BASE = 1024;
+const TIMER_INTERVAL = 1000;
+const SECONDS_PER_MINUTE = 60;
+const MILLISECONDS_PER_SECOND = 1000;
+
 export class CameraStreamManager {
   private mediaStream: MediaStream | null = null;
   private mediaRecorder: MediaRecorder | null = null;
   private recordedChunks: Blob[] = [];
+  private recordedMimeType: string | null = null;
   private state: StreamState = "idle";
   private recordingStartTime = 0;
   private recordingTimer: number | null = null;
@@ -36,44 +43,26 @@ export class CameraStreamManager {
     };
   }
 
-  /**
-   * Get the current state of the stream manager
-   */
   getState(): StreamState {
     return this.state;
   }
 
-  /**
-   * Get the current media stream
-   */
   getStream(): MediaStream | null {
     return this.mediaStream;
   }
 
-  /**
-   * Get the current media recorder
-   */
   getRecorder(): MediaRecorder | null {
     return this.mediaRecorder;
   }
 
-  /**
-   * Check if currently recording
-   */
   isRecording(): boolean {
     return this.state === "recording";
   }
 
-  /**
-   * Check if stream is active
-   */
   isActive(): boolean {
     return this.state === "active" || this.state === "recording";
   }
 
-  /**
-   * Subscribe to an event
-   */
   on<T extends keyof StreamEventMap>(
     event: T,
     listener: StreamEventListener<T>
@@ -83,33 +72,24 @@ export class CameraStreamManager {
     }
     const listeners = this.eventListeners.get(event);
     if (listeners) {
-      // Type assertion is safe here because we know the listener matches the event type
       listeners.add(listener as (data: unknown) => void);
     }
 
-    // Return unsubscribe function
     return () => {
       this.off(event, listener);
     };
   }
 
-  /**
-   * Unsubscribe from an event
-   */
   off<T extends keyof StreamEventMap>(
     event: T,
     listener: StreamEventListener<T>
   ): void {
     const listeners = this.eventListeners.get(event);
     if (listeners) {
-      // Type assertion needed because Set stores (data: unknown) => void
       listeners.delete(listener as (data: unknown) => void);
     }
   }
 
-  /**
-   * Subscribe to an event once
-   */
   once<T extends keyof StreamEventMap>(
     event: T,
     listener: StreamEventListener<T>
@@ -122,9 +102,6 @@ export class CameraStreamManager {
     return this.on(event, wrappedListener);
   }
 
-  /**
-   * Emit an event to all listeners
-   */
   private emit<T extends keyof StreamEventMap>(
     event: T,
     data: StreamEventMap[T]
@@ -134,16 +111,13 @@ export class CameraStreamManager {
       for (const listener of listeners) {
         try {
           (listener as StreamEventListener<T>)(data);
-        } catch (error) {
-          console.error(`Error in event listener for ${String(event)}:`, error);
+        } catch {
+          // Ignore errors in event listeners
         }
       }
     }
   }
 
-  /**
-   * Update state and emit statechange event
-   */
   private setState(newState: StreamState): void {
     if (this.state === newState) {
       return;
@@ -153,9 +127,6 @@ export class CameraStreamManager {
     this.emit("statechange", { state: newState, previousState });
   }
 
-  /**
-   * Start the camera stream
-   */
   async startStream(): Promise<MediaStream> {
     if (this.mediaStream) {
       return this.mediaStream;
@@ -180,9 +151,6 @@ export class CameraStreamManager {
     }
   }
 
-  /**
-   * Stop the camera stream
-   */
   stopStream(): void {
     if (this.mediaStream) {
       for (const track of this.mediaStream.getTracks()) {
@@ -197,9 +165,6 @@ export class CameraStreamManager {
     }
   }
 
-  /**
-   * Start recording
-   */
   startRecording(): void {
     if (!this.mediaStream) {
       throw new Error("Stream must be started before recording");
@@ -210,14 +175,14 @@ export class CameraStreamManager {
     }
 
     this.recordedChunks = [];
+    this.recordedMimeType = null;
 
     try {
       this.mediaRecorder = new MediaRecorder(
         this.mediaStream,
         this.recordingOptions
       );
-    } catch (_error) {
-      // Fallback to default mimeType if the preferred one is not supported
+    } catch {
       this.mediaRecorder = new MediaRecorder(this.mediaStream);
     }
 
@@ -229,14 +194,25 @@ export class CameraStreamManager {
     };
 
     this.mediaRecorder.onstop = () => {
+      if (!this.mediaRecorder) {
+        throw new Error("MediaRecorder is missing in onstop handler");
+      }
+
+      const mimeType = this.mediaRecorder.mimeType;
+      if (!mimeType) {
+        throw new Error("MediaRecorder mimeType is missing");
+      }
+
+      this.recordedMimeType = mimeType;
+
       const blob = new Blob(this.recordedChunks, {
-        type: this.mediaRecorder?.mimeType || "video/webm",
+        type: mimeType,
       });
 
       this.setState("active");
       this.emit("recordingstop", {
         blob,
-        mimeType: this.mediaRecorder?.mimeType || "video/webm",
+        mimeType,
       });
 
       this.mediaRecorder = null;
@@ -249,40 +225,19 @@ export class CameraStreamManager {
 
     this.emit("recordingstart", { recorder: this.mediaRecorder });
 
-    // Start timer for recording time updates
-    this.recordingTimer = window.setInterval(() => {
-      const elapsed = (Date.now() - this.recordingStartTime) / 1000;
-      const mins = Math.floor(elapsed / 60);
-      const secs = Math.floor(elapsed % 60);
-      const formatted = `${mins.toString().padStart(2, "0")}:${secs
-        .toString()
-        .padStart(2, "0")}`;
-
-      this.emit("recordingtimeupdate", { elapsed, formatted });
-    }, 1000);
+    this.startRecordingTimer();
   }
 
-  /**
-   * Stop recording
-   */
   stopRecording(): void {
     if (!(this.mediaRecorder && this.isRecording())) {
       return;
     }
 
     this.setState("stopping");
-
-    if (this.recordingTimer !== null) {
-      clearInterval(this.recordingTimer);
-      this.recordingTimer = null;
-    }
-
+    this.clearRecordingTimer();
     this.mediaRecorder.stop();
   }
 
-  /**
-   * Start recording with mediabunny (real-time processing)
-   */
   async startRecordingWithMediabunny(
     processor: StreamProcessor,
     config: TranscodeConfig
@@ -297,24 +252,21 @@ export class CameraStreamManager {
 
     this.streamProcessor = processor;
 
-    // Start mediabunny processing
     await processor.startProcessing(this.mediaStream, config);
 
-    // Set up buffer size tracking
     this.bufferSizeUpdateInterval = window.setInterval(() => {
-      if (this.streamProcessor) {
-        const size = this.streamProcessor.getBufferSize();
-        const formatted = this.formatFileSize(size);
-        this.emit("recordingbufferupdate", { size, formatted });
+      if (!this.streamProcessor) {
+        return;
       }
-    }, 1000); // Update every second
+      const size = this.streamProcessor.getBufferSize();
+      const formatted = this.formatFileSize(size);
+      this.emit("recordingbufferupdate", { size, formatted });
+    }, TIMER_INTERVAL);
 
-    // Set up mute state change forwarding
     processor.setOnMuteStateChange((muted: boolean) => {
       this.emit("audiomutetoggle", { muted });
     });
 
-    // Set up source change forwarding
     processor.setOnSourceChange((stream: MediaStream) => {
       this.emit("videosourcechange", { stream });
     });
@@ -324,22 +276,9 @@ export class CameraStreamManager {
 
     this.emit("recordingstart", { recorder: null });
 
-    // Start timer for recording time updates
-    this.recordingTimer = window.setInterval(() => {
-      const elapsed = (Date.now() - this.recordingStartTime) / 1000;
-      const mins = Math.floor(elapsed / 60);
-      const secs = Math.floor(elapsed % 60);
-      const formatted = `${mins.toString().padStart(2, "0")}:${secs
-        .toString()
-        .padStart(2, "0")}`;
-
-      this.emit("recordingtimeupdate", { elapsed, formatted });
-    }, 1000);
+    this.startRecordingTimer();
   }
 
-  /**
-   * Stop recording with mediabunny
-   */
   async stopRecordingWithMediabunny(): Promise<Blob> {
     if (!(this.streamProcessor && this.isRecording())) {
       throw new Error("Not recording with mediabunny");
@@ -347,18 +286,9 @@ export class CameraStreamManager {
 
     this.setState("stopping");
 
-    // Stop timers
-    if (this.recordingTimer !== null) {
-      clearInterval(this.recordingTimer);
-      this.recordingTimer = null;
-    }
+    this.clearRecordingTimer();
+    this.clearBufferSizeInterval();
 
-    if (this.bufferSizeUpdateInterval !== null) {
-      clearInterval(this.bufferSizeUpdateInterval);
-      this.bufferSizeUpdateInterval = null;
-    }
-
-    // Finalize mediabunny processing
     const result = await this.streamProcessor.finalize();
 
     this.setState("active");
@@ -371,79 +301,96 @@ export class CameraStreamManager {
     return result.blob;
   }
 
-  /**
-   * Toggle mute during recording
-   */
   toggleMute(): void {
-    if (this.streamProcessor) {
-      this.streamProcessor.toggleMute();
+    if (!this.streamProcessor) {
+      throw new Error("StreamProcessor is required to toggle mute");
     }
+    this.streamProcessor.toggleMute();
   }
 
-  /**
-   * Check if currently muted
-   */
   isMuted(): boolean {
-    if (this.streamProcessor) {
-      return this.streamProcessor.isMutedState();
+    if (!this.streamProcessor) {
+      throw new Error("StreamProcessor is required to check mute state");
     }
-    return false;
+    return this.streamProcessor.isMutedState();
   }
 
-  /**
-   * Switch video source during recording
-   */
   async switchVideoSource(newStream: MediaStream): Promise<void> {
-    if (this.streamProcessor) {
-      await this.streamProcessor.switchVideoSource(newStream);
+    if (!this.streamProcessor) {
+      throw new Error("StreamProcessor is required to switch video source");
     }
+    await this.streamProcessor.switchVideoSource(newStream);
   }
 
-  /**
-   * Set the media stream (used when switching sources)
-   */
   setMediaStream(stream: MediaStream): void {
     this.mediaStream = stream;
   }
 
-  /**
-   * Get current video source
-   */
-  getCurrentVideoSource(): MediaStream | null {
-    if (this.streamProcessor) {
-      return this.streamProcessor.getCurrentVideoSource();
+  getCurrentVideoSource(): MediaStream {
+    if (!this.streamProcessor) {
+      throw new Error(
+        "StreamProcessor is required to get current video source"
+      );
     }
-    return null;
+    const source = this.streamProcessor.getCurrentVideoSource();
+    if (!source) {
+      throw new Error("Current video source is not available");
+    }
+    return source;
   }
 
-  /**
-   * Format file size helper
-   */
   private formatFileSize(bytes: number): string {
     if (bytes === 0) {
       return "0 Bytes";
     }
-    const k = 1024;
-    const sizes = ["Bytes", "KB", "MB", "GB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${Math.round((bytes / k ** i) * 100) / 100} ${sizes[i]}`;
+    const index = Math.floor(Math.log(bytes) / Math.log(FILE_SIZE_BASE));
+    const size = Math.round((bytes / FILE_SIZE_BASE ** index) * 100) / 100;
+    return `${size} ${FILE_SIZE_UNITS[index]}`;
   }
 
-  /**
-   * Get the recorded blob (available after stopRecording)
-   */
-  getRecordedBlob(): Blob | null {
-    if (this.recordedChunks.length === 0) {
-      return null;
+  private formatTimeElapsed(elapsedSeconds: number): string {
+    const mins = Math.floor(elapsedSeconds / SECONDS_PER_MINUTE);
+    const secs = Math.floor(elapsedSeconds % SECONDS_PER_MINUTE);
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
+  }
+
+  private startRecordingTimer(): void {
+    this.recordingTimer = window.setInterval(() => {
+      const elapsed =
+        (Date.now() - this.recordingStartTime) / MILLISECONDS_PER_SECOND;
+      const formatted = this.formatTimeElapsed(elapsed);
+      this.emit("recordingtimeupdate", { elapsed, formatted });
+    }, TIMER_INTERVAL);
+  }
+
+  private clearRecordingTimer(): void {
+    if (this.recordingTimer !== null) {
+      clearInterval(this.recordingTimer);
+      this.recordingTimer = null;
     }
+  }
+
+  private clearBufferSizeInterval(): void {
+    if (this.bufferSizeUpdateInterval !== null) {
+      clearInterval(this.bufferSizeUpdateInterval);
+      this.bufferSizeUpdateInterval = null;
+    }
+  }
+
+  getRecordedBlob(): Blob {
+    if (this.recordedChunks.length === 0) {
+      throw new Error("No recorded chunks available");
+    }
+
+    if (!this.recordedMimeType) {
+      throw new Error("Recorded mimeType is missing");
+    }
+
     return new Blob(this.recordedChunks, {
-      type: this.mediaRecorder?.mimeType || "video/webm",
+      type: this.recordedMimeType,
     });
   }
 
-  /**
-   * Cleanup all resources
-   */
   destroy(): void {
     this.stopRecording();
     if (this.streamProcessor) {
@@ -454,17 +401,9 @@ export class CameraStreamManager {
     }
     this.stopStream();
 
-    if (this.recordingTimer !== null) {
-      clearInterval(this.recordingTimer);
-      this.recordingTimer = null;
-    }
+    this.clearRecordingTimer();
+    this.clearBufferSizeInterval();
 
-    if (this.bufferSizeUpdateInterval !== null) {
-      clearInterval(this.bufferSizeUpdateInterval);
-      this.bufferSizeUpdateInterval = null;
-    }
-
-    // Clear all event listeners
     this.eventListeners.clear();
     this.setState("idle");
   }

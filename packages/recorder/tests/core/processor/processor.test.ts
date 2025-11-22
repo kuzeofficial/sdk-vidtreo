@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_TRANSCODE_CONFIG } from "@/core/processor/config";
+import { DEFAULT_TRANSCODE_CONFIG } from "@/core/config/default-config";
 import { transcodeVideo } from "@/core/processor/processor";
 
 describe("transcodeVideo", () => {

@@ -1,4 +1,11 @@
-export { DEFAULT_TRANSCODE_CONFIG } from "./core/processor/config";
+export type { ConfigServiceOptions } from "./core/config/config-service";
+export { ConfigService } from "./core/config/config-service";
+export { DEFAULT_TRANSCODE_CONFIG } from "./core/config/default-config";
+export type {
+  BackendConfigResponse,
+  BackendPreset,
+} from "./core/config/preset-mapper";
+export { mapPresetToConfig } from "./core/config/preset-mapper";
 export { transcodeVideo } from "./core/processor/processor";
 export { StreamProcessor } from "./core/processor/stream-processor";
 export type {
@@ -22,3 +29,10 @@ export type {
   StreamEventMap,
   StreamState,
 } from "./core/stream/types";
+export { extractVideoDuration } from "./core/upload/duration-extractor";
+export type {
+  VideoUploadInitResponse,
+  VideoUploadOptions,
+  VideoUploadResult,
+} from "./core/upload/video-upload-service";
+export { VideoUploadService } from "./core/upload/video-upload-service";

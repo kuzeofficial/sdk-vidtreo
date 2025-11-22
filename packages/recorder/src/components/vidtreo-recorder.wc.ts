@@ -1,11 +1,21 @@
-import { DEFAULT_TRANSCODE_CONFIG } from "../core/processor/config";
+import { ConfigService } from "../core/config/config-service";
+import { DEFAULT_TRANSCODE_CONFIG } from "../core/config/default-config";
 import { transcodeVideo } from "../core/processor/processor";
 import { StreamProcessor } from "../core/processor/stream-processor";
+import type { TranscodeConfig } from "../core/processor/types";
 import { DEFAULT_STREAM_CONFIG } from "../core/stream/config";
 import { CameraStreamManager } from "../core/stream/stream";
+import { extractVideoDuration } from "../core/upload/duration-extractor";
+import { VideoUploadService } from "../core/upload/video-upload-service";
 import "../styles/tailwind.css";
 
+const FILE_SIZE_UNITS = ["Bytes", "KB", "MB", "GB"] as const;
+const FILE_SIZE_BASE = 1024;
+const TIMESTAMP_REGEX = /[:.]/g;
+
 export class VidtreoRecorder extends HTMLElement {
+  static observedAttributes = ["api-key", "backend-url"];
+
   private readonly streamManager: CameraStreamManager;
   private recordedBlob: Blob | null = null;
   private processedBlob: Blob | null = null;
@@ -14,12 +24,83 @@ export class VidtreoRecorder extends HTMLElement {
   private currentSourceType: "camera" | "screen" = "camera";
   private originalCameraStream: MediaStream | null = null;
   private screenShareTrackEndHandler: (() => void) | null = null;
+  private configService: ConfigService | null = null;
+  private currentConfig: TranscodeConfig = DEFAULT_TRANSCODE_CONFIG;
+  private configFetchPromise: Promise<TranscodeConfig> | null = null;
+  private uploadService: VideoUploadService | null = null;
+  private uploadProgress = 0;
 
   constructor() {
     super();
     this.attachShadow({ mode: "open" });
     this.streamManager = new CameraStreamManager();
-    // Setup event listeners
+    this.setupEventListeners();
+    this.render();
+    this.attachEventListeners();
+  }
+
+  connectedCallback(): void {
+    this.initializeConfigService();
+    this.startCamera().catch((error) => {
+      this.showError(this.extractErrorMessage(error));
+    });
+  }
+
+  attributeChangedCallback(
+    name: string,
+    oldValue: string | null,
+    newValue: string | null
+  ): void {
+    if (oldValue === newValue) {
+      return;
+    }
+
+    if (name === "api-key" || name === "backend-url") {
+      this.initializeConfigService();
+      if (this.configService) {
+        this.configService.clearCache();
+        this.fetchConfig();
+      }
+    }
+  }
+
+  disconnectedCallback(): void {
+    this.streamManager.destroy();
+  }
+
+  private get shadow(): ShadowRoot {
+    if (!this.shadowRoot) {
+      throw new Error("Shadow root not initialized");
+    }
+    return this.shadowRoot;
+  }
+
+  private queryElement<T extends HTMLElement>(selector: string): T {
+    const element = this.shadow.querySelector<T>(selector);
+    if (!element) {
+      throw new Error(`Element not found: ${selector}`);
+    }
+    return element;
+  }
+
+  private extractErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
+  }
+
+  private formatFileSize(bytes: number): string {
+    if (bytes === 0) {
+      return "0 Bytes";
+    }
+    const index = Math.floor(Math.log(bytes) / Math.log(FILE_SIZE_BASE));
+    const size = Math.round((bytes / FILE_SIZE_BASE ** index) * 100) / 100;
+    return `${size} ${FILE_SIZE_UNITS[index]}`;
+  }
+
+  // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Called in constructor
+  private setupEventListeners(): void {
     this.streamManager.on("statechange", ({ state, previousState }) => {
       this.handleStateChange(state, previousState);
     });
@@ -45,296 +126,200 @@ export class VidtreoRecorder extends HTMLElement {
       this.updateMuteState(muted);
     });
     this.streamManager.on("videosourcechange", ({ stream }) => {
-      // Update preview video element when source changes in real-time
-      const videoPreview = this.shadow.querySelector(
-        "#videoPreview"
-      ) as HTMLVideoElement;
-      if (videoPreview) {
-        videoPreview.srcObject = stream;
-        videoPreview.play().catch((error) => {
-          console.warn("Failed to play preview video:", error);
-        });
-      }
+      const videoPreview = this.queryElement<HTMLVideoElement>("#videoPreview");
+      videoPreview.srcObject = stream;
+      videoPreview.play().catch(() => {
+        this.showError("Failed to play preview video");
+      });
     });
     this.streamManager.on("error", ({ error }) => {
       this.showError(error.message);
     });
-    this.render();
-    this.attachEventListeners();
   }
 
-  connectedCallback(): void {
-    // Automatically start camera when component is mounted
-    this.startCamera().catch((error) => {
-      this.showError(
-        error instanceof Error ? error.message : "Failed to start camera"
-      );
-    });
-  }
+  private initializeConfigService(): void {
+    const apiKey = this.getAttribute("api-key");
+    const backendUrl = this.getAttribute("backend-url");
 
-  disconnectedCallback(): void {
-    this.streamManager.destroy();
-  }
-
-  private get shadow(): ShadowRoot {
-    if (!this.shadowRoot) {
-      throw new Error("Shadow root not initialized");
+    if (apiKey && backendUrl) {
+      this.configService = new ConfigService({
+        apiKey,
+        backendUrl,
+      });
+      this.uploadService = new VideoUploadService();
+      this.fetchConfig();
+    } else {
+      this.configService = null;
+      this.uploadService = null;
+      this.currentConfig = DEFAULT_TRANSCODE_CONFIG;
     }
-    return this.shadowRoot;
   }
 
-  private formatFileSize(bytes: number): string {
-    if (bytes === 0) {
-      return "0 Bytes";
+  private async fetchConfig(): Promise<void> {
+    if (!this.configService) {
+      return;
     }
-    const k = 1024;
-    const sizes = ["Bytes", "KB", "MB", "GB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return `${Math.round((bytes / k ** i) * 100) / 100} ${sizes[i]}`;
+
+    if (this.configFetchPromise) {
+      try {
+        this.currentConfig = await this.configFetchPromise;
+      } catch {
+        this.currentConfig = DEFAULT_TRANSCODE_CONFIG;
+      }
+      return;
+    }
+
+    this.configFetchPromise = this.configService.fetchConfig();
+    try {
+      this.currentConfig = await this.configFetchPromise;
+    } catch {
+      this.currentConfig = DEFAULT_TRANSCODE_CONFIG;
+    } finally {
+      this.configFetchPromise = null;
+    }
+  }
+
+  private async getConfig(): Promise<TranscodeConfig> {
+    if (this.configService && !this.configFetchPromise) {
+      await this.fetchConfig();
+    }
+    return this.currentConfig;
   }
 
   private showError(message: string): void {
-    const errorEl = this.shadow.querySelector("#error") as HTMLElement;
-    if (errorEl) {
-      errorEl.textContent = message;
-      errorEl.classList.add("active");
-    }
+    const errorEl = this.queryElement<HTMLElement>("#error");
+    errorEl.textContent = message;
+    errorEl.classList.add("active");
   }
 
   private hideError(): void {
-    const errorEl = this.shadow.querySelector("#error") as HTMLElement;
-    if (errorEl) {
-      errorEl.classList.remove("active");
-    }
+    const errorEl = this.queryElement<HTMLElement>("#error");
+    errorEl.classList.remove("active");
   }
 
   private showResult(originalSize: number, processedSize: number): void {
-    const resultEl = this.shadow.querySelector("#result") as HTMLElement;
-    const resultInfoEl = this.shadow.querySelector(
-      "#resultInfo"
-    ) as HTMLElement;
-    if (resultEl && resultInfoEl) {
-      resultInfoEl.textContent = `Original: ${this.formatFileSize(originalSize)} → Processed: ${this.formatFileSize(processedSize)}`;
-      resultEl.classList.add("active");
-    }
+    const resultEl = this.queryElement<HTMLElement>("#result");
+    const resultInfoEl = this.queryElement<HTMLElement>("#resultInfo");
+    resultInfoEl.textContent = `Original: ${this.formatFileSize(originalSize)} → Processed: ${this.formatFileSize(processedSize)}`;
+    resultEl.classList.add("active");
   }
 
   private hideResult(): void {
-    const resultEl = this.shadow.querySelector("#result") as HTMLElement;
-    if (resultEl) {
-      resultEl.classList.remove("active");
-    }
+    const resultEl = this.queryElement<HTMLElement>("#result");
+    resultEl.classList.remove("active");
   }
 
-  private updateProgress(percentage: number, text?: string): void {
+  private updateProgress(percentage: number, text: string): void {
     const percentageValue = Math.round(percentage * 100);
-    const progressFillEl = this.shadow.querySelector(
-      "#progressFill"
-    ) as HTMLElement;
-    const progressTextEl = this.shadow.querySelector(
-      "#progressText"
-    ) as HTMLElement;
-
-    if (progressFillEl) {
-      progressFillEl.style.width = `${percentageValue}%`;
-    }
-    if (progressTextEl) {
-      progressTextEl.textContent = text || `Transcoding... ${percentageValue}%`;
-    }
+    const progressFillEl = this.queryElement<HTMLElement>("#progressFill");
+    const progressTextEl = this.queryElement<HTMLElement>("#progressText");
+    progressFillEl.style.width = `${percentageValue}%`;
+    progressTextEl.textContent = text;
   }
 
   private showProgress(): void {
-    const progressEl = this.shadow.querySelector("#progress") as HTMLElement;
-    if (progressEl) {
-      progressEl.classList.add("active");
-    }
+    const progressEl = this.queryElement<HTMLElement>("#progress");
+    progressEl.classList.add("active");
   }
 
   private hideProgress(): void {
-    const progressEl = this.shadow.querySelector("#progress") as HTMLElement;
-    if (progressEl) {
-      progressEl.classList.remove("active");
-    }
+    const progressEl = this.queryElement<HTMLElement>("#progress");
+    progressEl.classList.remove("active");
   }
 
   private updateRecordingTimer(formatted: string): void {
-    const timerEl = this.shadow.querySelector("#recordingTimer") as HTMLElement;
-    if (timerEl) {
-      timerEl.textContent = formatted;
-    }
+    const timerEl = this.queryElement<HTMLElement>("#recordingTimer");
+    timerEl.textContent = formatted;
   }
 
   private updateBufferSize(formatted: string): void {
-    const recordingSize = this.shadow.querySelector(
-      "#recordingSize"
-    ) as HTMLElement;
-    if (recordingSize) {
-      recordingSize.textContent = `Size: ${formatted}`;
-    }
+    const recordingSize = this.queryElement<HTMLElement>("#recordingSize");
+    recordingSize.textContent = `Size: ${formatted}`;
   }
 
   private updateMuteState(muted: boolean): void {
-    const muteButton = this.shadow.querySelector(
-      "#muteButton"
-    ) as HTMLButtonElement;
-    if (muteButton) {
-      muteButton.textContent = muted ? "🔇 Unmute" : "🔊 Mute";
-      muteButton.classList.toggle("muted", muted);
-    }
+    const muteButton = this.queryElement<HTMLButtonElement>("#muteButton");
+    muteButton.textContent = muted ? "🔇 Unmute" : "🔊 Mute";
+    muteButton.classList.toggle("muted", muted);
   }
 
   private handleStateChange(state: string, previousState: string): void {
-    // Handle UI updates based on state changes
     if (state === "active" && previousState === "starting") {
       this.hideError();
     }
   }
 
   private handleStreamStart(stream: MediaStream): void {
-    const videoPreview = this.shadow.querySelector(
-      "#videoPreview"
-    ) as HTMLVideoElement;
-    if (videoPreview) {
-      videoPreview.srcObject = stream;
-      videoPreview.play();
-    }
+    const videoPreview = this.queryElement<HTMLVideoElement>("#videoPreview");
+    videoPreview.srcObject = stream;
+    videoPreview.play();
 
-    const startButton = this.shadow.querySelector(
-      "#startButton"
-    ) as HTMLButtonElement;
-    const stopButton = this.shadow.querySelector(
-      "#stopButton"
-    ) as HTMLButtonElement;
-    const cameraArea = this.shadow.querySelector("#cameraArea") as HTMLElement;
-    const startCameraArea = this.shadow.querySelector(
-      "#startCameraArea"
-    ) as HTMLElement;
+    const startButton = this.queryElement<HTMLButtonElement>("#startButton");
+    const stopButton = this.queryElement<HTMLButtonElement>("#stopButton");
+    const cameraArea = this.queryElement<HTMLElement>("#cameraArea");
+    const startCameraArea = this.queryElement<HTMLElement>("#startCameraArea");
 
-    if (startButton) {
-      startButton.disabled = false;
-    }
-    if (stopButton) {
-      stopButton.disabled = true;
-    }
-    if (cameraArea) {
-      cameraArea.classList.add("active");
-    }
-    if (startCameraArea) {
-      startCameraArea.style.display = "none";
-    }
+    startButton.disabled = false;
+    stopButton.disabled = true;
+    cameraArea.classList.add("active");
+    startCameraArea.style.display = "none";
   }
 
   private handleStreamStop(): void {
-    const videoPreview = this.shadow.querySelector(
-      "#videoPreview"
-    ) as HTMLVideoElement;
-    if (videoPreview) {
-      videoPreview.srcObject = null;
-    }
-
-    const cameraArea = this.shadow.querySelector("#cameraArea") as HTMLElement;
-    if (cameraArea) {
-      cameraArea.classList.remove("active");
-    }
+    const videoPreview = this.queryElement<HTMLVideoElement>("#videoPreview");
+    videoPreview.srcObject = null;
+    const cameraArea = this.queryElement<HTMLElement>("#cameraArea");
+    cameraArea.classList.remove("active");
   }
 
   private handleRecordingStart(): void {
-    const startButton = this.shadow.querySelector(
-      "#startButton"
-    ) as HTMLButtonElement;
-    const stopButton = this.shadow.querySelector(
-      "#stopButton"
-    ) as HTMLButtonElement;
-    const recordingIndicator = this.shadow.querySelector(
+    const startButton = this.queryElement<HTMLButtonElement>("#startButton");
+    const stopButton = this.queryElement<HTMLButtonElement>("#stopButton");
+    const recordingIndicator = this.queryElement<HTMLElement>(
       "#recordingIndicator"
-    ) as HTMLElement;
-    const recordingTimer = this.shadow.querySelector(
-      "#recordingTimer"
-    ) as HTMLElement;
-    const recordingInfo = this.shadow.querySelector(
-      "#recordingInfo"
-    ) as HTMLElement;
-
-    if (startButton) {
-      startButton.disabled = true;
-    }
-    if (stopButton) {
-      stopButton.disabled = false;
-    }
-    if (recordingIndicator) {
-      recordingIndicator.classList.add("active");
-    }
-    if (recordingTimer) {
-      recordingTimer.textContent = "00:00";
-    }
-
-    // Show recording info to display buffer size
-    if (recordingInfo) {
-      recordingInfo.classList.add("active");
-    }
-
-    // Show mute button when recording starts
-    const muteButton = this.shadow.querySelector(
-      "#muteButton"
-    ) as HTMLButtonElement;
-    if (muteButton) {
-      muteButton.disabled = false;
-      muteButton.style.display = "block";
-    }
-
-    // Show switch source button when recording starts
-    const switchSourceButton = this.shadow.querySelector(
+    );
+    const recordingTimer = this.queryElement<HTMLElement>("#recordingTimer");
+    const recordingInfo = this.queryElement<HTMLElement>("#recordingInfo");
+    const muteButton = this.queryElement<HTMLButtonElement>("#muteButton");
+    const switchSourceButton = this.queryElement<HTMLButtonElement>(
       "#switchSourceButton"
-    ) as HTMLButtonElement;
-    if (switchSourceButton) {
-      switchSourceButton.disabled = false;
-      switchSourceButton.style.display = "block";
-    }
+    );
+
+    startButton.disabled = true;
+    stopButton.disabled = false;
+    recordingIndicator.classList.add("active");
+    recordingTimer.textContent = "00:00";
+    recordingInfo.classList.add("active");
+    muteButton.disabled = false;
+    muteButton.style.display = "block";
+    switchSourceButton.disabled = false;
+    switchSourceButton.style.display = "block";
 
     this.hideError();
     this.hideResult();
   }
 
   private updateRecordingControlsAfterStop(): void {
-    const startButton = this.shadow.querySelector(
-      "#startButton"
-    ) as HTMLButtonElement;
-    const stopButton = this.shadow.querySelector(
-      "#stopButton"
-    ) as HTMLButtonElement;
-    const recordingIndicator = this.shadow.querySelector(
+    const startButton = this.queryElement<HTMLButtonElement>("#startButton");
+    const stopButton = this.queryElement<HTMLButtonElement>("#stopButton");
+    const recordingIndicator = this.queryElement<HTMLElement>(
       "#recordingIndicator"
-    ) as HTMLElement;
-    const processButton = this.shadow.querySelector(
-      "#processButton"
-    ) as HTMLButtonElement;
-    const muteButton = this.shadow.querySelector(
-      "#muteButton"
-    ) as HTMLButtonElement;
-    const switchSourceButton = this.shadow.querySelector(
+    );
+    const processButton =
+      this.queryElement<HTMLButtonElement>("#processButton");
+    const muteButton = this.queryElement<HTMLButtonElement>("#muteButton");
+    const switchSourceButton = this.queryElement<HTMLButtonElement>(
       "#switchSourceButton"
-    ) as HTMLButtonElement;
+    );
 
-    if (startButton) {
-      startButton.disabled = false;
-    }
-    if (stopButton) {
-      stopButton.disabled = true;
-    }
-    if (recordingIndicator) {
-      recordingIndicator.classList.remove("active");
-    }
-    if (processButton) {
-      processButton.style.display = "none";
-    }
-    if (muteButton) {
-      muteButton.disabled = true;
-      muteButton.style.display = "none";
-    }
-    if (switchSourceButton) {
-      switchSourceButton.disabled = true;
-      switchSourceButton.style.display = "none";
-    }
+    startButton.disabled = false;
+    stopButton.disabled = true;
+    recordingIndicator.classList.remove("active");
+    processButton.style.display = "none";
+    muteButton.disabled = true;
+    muteButton.style.display = "none";
+    switchSourceButton.disabled = true;
+    switchSourceButton.style.display = "none";
   }
 
   private handleScreenRecordingStop(): void {
@@ -343,9 +328,7 @@ export class VidtreoRecorder extends HTMLElement {
       this.stopStreamTracks(currentStream);
     }
     this.streamManager.startStream().catch((error) => {
-      this.showError(
-        error instanceof Error ? error.message : "Failed to restart camera"
-      );
+      this.showError(this.extractErrorMessage(error));
     });
   }
 
@@ -384,102 +367,169 @@ export class VidtreoRecorder extends HTMLElement {
   }
 
   private async startCamera(): Promise<void> {
-    // Show loading state
-    const startCameraArea = this.shadow.querySelector(
-      "#startCameraArea"
-    ) as HTMLElement;
-    if (startCameraArea) {
-      startCameraArea.classList.add("loading");
-    }
+    const startCameraArea = this.queryElement<HTMLElement>("#startCameraArea");
+    startCameraArea.classList.add("loading");
 
     try {
       await this.streamManager.startStream();
-    } catch (_error) {
-      // Show error and keep start camera area visible for retry
-      const errorCameraArea = this.shadow.querySelector(
-        "#startCameraArea"
-      ) as HTMLElement;
-      const startCameraButton = this.shadow.querySelector(
-        "#startCameraButton"
-      ) as HTMLButtonElement;
-      const cameraText = errorCameraArea?.querySelector(
-        ".camera-text"
-      ) as HTMLElement;
+    } catch {
+      const errorCameraArea =
+        this.queryElement<HTMLElement>("#startCameraArea");
+      const startCameraButton =
+        this.queryElement<HTMLButtonElement>("#startCameraButton");
+      const cameraText =
+        errorCameraArea.querySelector<HTMLElement>(".camera-text");
 
-      if (errorCameraArea) {
-        errorCameraArea.classList.remove("loading");
-        errorCameraArea.style.display = "block";
+      if (!cameraText) {
+        throw new Error("Camera text element not found");
       }
-      if (startCameraButton) {
-        startCameraButton.style.display = "block";
-      }
-      if (cameraText) {
-        cameraText.textContent = "Failed to start camera";
-      }
-      // Error is already shown via event listener
+
+      errorCameraArea.classList.remove("loading");
+      errorCameraArea.style.display = "block";
+      startCameraButton.style.display = "block";
+      cameraText.textContent = "Failed to start camera";
     }
   }
 
   private async startRecording(): Promise<void> {
     try {
-      // Store reference to original camera stream
+      this.clearUploadStatus();
+
       const currentStream = this.streamManager.getStream();
       if (currentStream) {
         this.originalCameraStream = currentStream;
       }
 
-      // Create StreamProcessor instance
       this.streamProcessor = new StreamProcessor();
+      const config = await this.getConfig();
 
-      // Start recording with mediabunny
       await this.streamManager.startRecordingWithMediabunny(
         this.streamProcessor,
-        DEFAULT_TRANSCODE_CONFIG
+        config
       );
     } catch (error) {
-      this.showError(
-        error instanceof Error ? error.message : "Failed to start recording"
-      );
+      this.showError(this.extractErrorMessage(error));
     }
   }
 
   private async stopRecording(): Promise<void> {
     try {
-      // Stop mediabunny recording and get final blob
       const blob = await this.streamManager.stopRecordingWithMediabunny();
 
-      // Blob is already processed! No need for separate processing step
       this.processedBlob = blob;
       this.recordedBlob = blob;
 
-      // Show result immediately
       this.showResult(blob.size, blob.size);
+
+      await this.uploadVideoIfConfigured(blob);
     } catch (error) {
-      this.showError(
-        error instanceof Error ? error.message : "Failed to stop recording"
-      );
+      this.showError(this.extractErrorMessage(error));
     }
   }
 
-  private updateRecordingInfo(): void {
-    const blob = this.recordedBlob || this.streamManager.getRecordedBlob();
-    if (!blob) {
+  private async uploadVideoIfConfigured(blob: Blob): Promise<void> {
+    const apiKey = this.getAttribute("api-key");
+    const backendUrl = this.getAttribute("backend-url");
+
+    if (!(apiKey && backendUrl && this.uploadService)) {
       return;
     }
 
-    const recordingInfo = this.shadow.querySelector(
-      "#recordingInfo"
-    ) as HTMLElement;
-    const recordingSize = this.shadow.querySelector(
-      "#recordingSize"
-    ) as HTMLElement;
+    try {
+      this.uploadProgress = 0;
+      this.showUploadProgress();
 
-    if (recordingInfo) {
-      recordingInfo.classList.add("active");
+      const duration = await extractVideoDuration(blob);
+
+      const result = await this.uploadService.uploadVideo(blob, {
+        apiKey,
+        backendUrl,
+        filename: `recording-${Date.now()}.mp4`,
+        duration,
+        onProgress: (progress) => {
+          this.uploadProgress = progress;
+          this.updateUploadProgress(progress);
+        },
+      });
+
+      this.hideUploadProgress();
+      this.showUploadSuccess(result);
+    } catch (error) {
+      this.hideUploadProgress();
+      this.showUploadError(this.extractErrorMessage(error));
+    } finally {
+      this.uploadProgress = 0;
     }
-    if (recordingSize) {
-      recordingSize.textContent = `Size: ${this.formatFileSize(blob.size)}`;
+  }
+
+  private showUploadProgress(): void {
+    const uploadEl = this.queryElement<HTMLElement>("#uploadProgress");
+    uploadEl.classList.add("active");
+    this.updateUploadProgress(0);
+  }
+
+  private updateUploadProgress(progress: number): void {
+    const progressFillEl = this.queryElement<HTMLElement>(
+      "#uploadProgressFill"
+    );
+    const progressTextEl = this.queryElement<HTMLElement>(
+      "#uploadProgressText"
+    );
+    progressFillEl.style.width = `${Math.round(progress * 100)}%`;
+    progressTextEl.textContent = `Uploading... ${Math.round(progress * 100)}%`;
+  }
+
+  private hideUploadProgress(): void {
+    const uploadEl = this.queryElement<HTMLElement>("#uploadProgress");
+    uploadEl.classList.remove("active");
+  }
+
+  private showUploadSuccess(result: {
+    videoId: string;
+    uploadUrl: string;
+  }): void {
+    const uploadStatusEl = this.queryElement<HTMLElement>("#uploadStatus");
+    const uploadStatusTextEl =
+      this.queryElement<HTMLElement>("#uploadStatusText");
+    uploadStatusEl.classList.add("active", "success");
+    uploadStatusEl.classList.remove("error");
+    uploadStatusTextEl.textContent = `✅ Video uploaded successfully! Video ID: ${result.videoId}`;
+  }
+
+  private showUploadError(message: string): void {
+    const uploadStatusEl = this.queryElement<HTMLElement>("#uploadStatus");
+    const uploadStatusTextEl =
+      this.queryElement<HTMLElement>("#uploadStatusText");
+    uploadStatusEl.classList.add("active", "error");
+    uploadStatusEl.classList.remove("success");
+    uploadStatusTextEl.textContent = `❌ Upload failed: ${message}`;
+  }
+
+  private clearUploadStatus(): void {
+    const uploadStatusEl = this.queryElement<HTMLElement>("#uploadStatus");
+    uploadStatusEl.classList.remove("active", "success", "error");
+    this.hideUploadProgress();
+  }
+
+  private updateRecordingInfo(): void {
+    const recordedBlob = this.recordedBlob;
+    if (!recordedBlob) {
+      try {
+        const managerBlob = this.streamManager.getRecordedBlob();
+        const recordingInfo = this.queryElement<HTMLElement>("#recordingInfo");
+        const recordingSize = this.queryElement<HTMLElement>("#recordingSize");
+        recordingInfo.classList.add("active");
+        recordingSize.textContent = `Size: ${this.formatFileSize(managerBlob.size)}`;
+      } catch {
+        return;
+      }
+      return;
     }
+
+    const recordingInfo = this.queryElement<HTMLElement>("#recordingInfo");
+    const recordingSize = this.queryElement<HTMLElement>("#recordingSize");
+    recordingInfo.classList.add("active");
+    recordingSize.textContent = `Size: ${this.formatFileSize(recordedBlob.size)}`;
   }
 
   private async processVideo(): Promise<void> {
@@ -488,12 +538,9 @@ export class VidtreoRecorder extends HTMLElement {
     }
 
     this.isProcessing = true;
-    const processButton = this.shadow.querySelector(
-      "#processButton"
-    ) as HTMLButtonElement;
-    if (processButton) {
-      processButton.disabled = true;
-    }
+    const processButton =
+      this.queryElement<HTMLButtonElement>("#processButton");
+    processButton.disabled = true;
 
     this.hideError();
     this.hideResult();
@@ -501,11 +548,16 @@ export class VidtreoRecorder extends HTMLElement {
     this.updateProgress(0, "Starting transcoding...");
 
     try {
+      const config = await this.getConfig();
+
       const transcodeResult = await transcodeVideo(
         this.recordedBlob,
-        DEFAULT_TRANSCODE_CONFIG,
+        config,
         (progress: number) => {
-          this.updateProgress(progress);
+          this.updateProgress(
+            progress,
+            `Transcoding... ${Math.round(progress * 100)}%`
+          );
         }
       );
 
@@ -518,21 +570,13 @@ export class VidtreoRecorder extends HTMLElement {
           throw new Error("Recorded blob is missing");
         }
         this.showResult(this.recordedBlob.size, transcodeResult.blob.size);
-        if (processButton) {
-          processButton.disabled = false;
-        }
+        processButton.disabled = false;
         this.isProcessing = false;
       }, 500);
     } catch (error) {
       this.hideProgress();
-      this.showError(
-        error instanceof Error
-          ? error.message
-          : "An error occurred during transcoding"
-      );
-      if (processButton) {
-        processButton.disabled = false;
-      }
+      this.showError(this.extractErrorMessage(error));
+      processButton.disabled = false;
       this.isProcessing = false;
     }
   }
@@ -546,7 +590,7 @@ export class VidtreoRecorder extends HTMLElement {
     const link = document.createElement("a");
     const timestamp = new Date()
       .toISOString()
-      .replace(/[:.]/g, "-")
+      .replace(TIMESTAMP_REGEX, "-")
       .slice(0, -5);
     link.href = url;
     link.download = `vidtreo-recording-${timestamp}.mp4`;
@@ -616,7 +660,6 @@ export class VidtreoRecorder extends HTMLElement {
       return;
     }
 
-    // Remove previous handler if exists
     if (this.screenShareTrackEndHandler) {
       const oldStream = this.streamManager.getStream();
       if (oldStream) {
@@ -630,19 +673,13 @@ export class VidtreoRecorder extends HTMLElement {
       }
     }
 
-    // Create handler to switch back to camera when screen share ends
     this.screenShareTrackEndHandler = () => {
       if (
         this.streamManager.isRecording() &&
         this.currentSourceType === "screen"
       ) {
         this.switchToCamera().catch((error) => {
-          console.error("Failed to switch back to camera:", error);
-          this.showError(
-            error instanceof Error
-              ? error.message
-              : "Failed to switch back to camera"
-          );
+          this.showError(this.extractErrorMessage(error));
         });
       }
     };
@@ -653,13 +690,7 @@ export class VidtreoRecorder extends HTMLElement {
   private async updatePreviewAfterSourceSwitch(
     newStream: MediaStream
   ): Promise<void> {
-    const videoPreview = this.shadow.querySelector(
-      "#videoPreview"
-    ) as HTMLVideoElement;
-    if (!videoPreview) {
-      return;
-    }
-
+    const videoPreview = this.queryElement<HTMLVideoElement>("#videoPreview");
     videoPreview.srcObject = newStream;
 
     await new Promise<void>((resolve, reject) => {
@@ -698,20 +729,15 @@ export class VidtreoRecorder extends HTMLElement {
   }
 
   private updateSwitchButtonText(): void {
-    const switchButton = this.shadow.querySelector(
+    const switchButton = this.queryElement<HTMLButtonElement>(
       "#switchSourceButton"
-    ) as HTMLButtonElement;
-    if (switchButton) {
-      switchButton.textContent =
-        this.currentSourceType === "camera"
-          ? "🔄 Switch to Screen"
-          : "🔄 Switch to Camera";
-    }
+    );
+    switchButton.textContent =
+      this.currentSourceType === "camera"
+        ? "🔄 Switch to Screen"
+        : "🔄 Switch to Camera";
   }
 
-  /**
-   * Toggle between camera and screen capture during recording
-   */
   private async toggleSource(): Promise<void> {
     if (!this.streamManager.isRecording()) {
       return;
@@ -733,9 +759,7 @@ export class VidtreoRecorder extends HTMLElement {
       if (this.currentSourceType === "camera" && this.originalCameraStream) {
         this.originalCameraStream = null;
       }
-      this.showError(
-        error instanceof Error ? error.message : "Failed to switch source"
-      );
+      this.showError(this.extractErrorMessage(error));
     }
   }
 
@@ -773,9 +797,6 @@ export class VidtreoRecorder extends HTMLElement {
     this.screenShareTrackEndHandler = null;
   }
 
-  /**
-   * Switch back to camera (used by both manual toggle and automatic switch)
-   */
   private async switchToCamera(): Promise<void> {
     if (!this.streamManager.isRecording()) {
       return;
@@ -800,144 +821,103 @@ export class VidtreoRecorder extends HTMLElement {
       this.updateSwitchButtonText();
     } catch (error) {
       this.hideSourceTransition();
-      this.showError(
-        error instanceof Error ? error.message : "Failed to switch to camera"
-      );
+      this.showError(this.extractErrorMessage(error));
     }
   }
 
-  private showSourceTransition(message = "Switching source..."): void {
-    const videoPreview = this.shadow.querySelector(
-      "#videoPreview"
-    ) as HTMLVideoElement;
-    if (videoPreview) {
-      videoPreview.classList.add("transitioning");
-    }
+  private showSourceTransition(message: string): void {
+    const videoPreview = this.queryElement<HTMLVideoElement>("#videoPreview");
+    videoPreview.classList.add("transitioning");
 
-    const transitionOverlay = this.shadow.querySelector(
+    const transitionOverlay = this.queryElement<HTMLElement>(
       "#sourceTransitionOverlay"
-    ) as HTMLElement;
-    if (transitionOverlay) {
-      transitionOverlay.classList.add("active");
-      const messageEl = transitionOverlay.querySelector(".transition-message");
-      if (messageEl) {
-        messageEl.textContent = message;
-      }
+    );
+    transitionOverlay.classList.add("active");
+    const messageEl = transitionOverlay.querySelector<HTMLElement>(
+      ".transition-message"
+    );
+    if (!messageEl) {
+      throw new Error("Transition message element not found");
     }
+    messageEl.textContent = message;
   }
 
   private hideSourceTransition(): void {
-    const videoPreview = this.shadow.querySelector(
-      "#videoPreview"
-    ) as HTMLVideoElement;
-    if (videoPreview) {
-      videoPreview.classList.remove("transitioning");
-    }
+    const videoPreview = this.queryElement<HTMLVideoElement>("#videoPreview");
+    videoPreview.classList.remove("transitioning");
 
-    const transitionOverlay = this.shadow.querySelector(
+    const transitionOverlay = this.queryElement<HTMLElement>(
       "#sourceTransitionOverlay"
-    ) as HTMLElement;
-    if (transitionOverlay) {
-      transitionOverlay.classList.remove("active");
-    }
+    );
+    transitionOverlay.classList.remove("active");
   }
 
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Called in constructor
   private attachEventListeners(): void {
-    const startCameraButton = this.shadow.querySelector("#startCameraButton");
-    const startButton = this.shadow.querySelector("#startButton");
-    const stopButton = this.shadow.querySelector("#stopButton");
-    const processButton = this.shadow.querySelector("#processButton");
-    const downloadButton = this.shadow.querySelector("#downloadButton");
-    const playButton = this.shadow.querySelector("#playButton");
+    const startCameraButton =
+      this.queryElement<HTMLButtonElement>("#startCameraButton");
+    const startButton = this.queryElement<HTMLButtonElement>("#startButton");
+    const stopButton = this.queryElement<HTMLButtonElement>("#stopButton");
+    const processButton =
+      this.queryElement<HTMLButtonElement>("#processButton");
+    const downloadButton =
+      this.queryElement<HTMLButtonElement>("#downloadButton");
+    const playButton = this.queryElement<HTMLButtonElement>("#playButton");
+    const muteButton = this.queryElement<HTMLButtonElement>("#muteButton");
+    const switchSourceButton = this.queryElement<HTMLButtonElement>(
+      "#switchSourceButton"
+    );
 
-    // Allow manual retry if camera fails to start
-    if (startCameraButton) {
-      startCameraButton.addEventListener("click", () => {
-        this.startCamera().catch((error) => {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to start camera"
-          );
-        });
+    startCameraButton.addEventListener("click", () => {
+      this.startCamera().catch((error) => {
+        this.showError(this.extractErrorMessage(error));
       });
-    }
+    });
 
-    if (startButton) {
-      startButton.addEventListener("click", () => {
-        this.startRecording().catch((error) => {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to start recording"
-          );
-        });
+    startButton.addEventListener("click", () => {
+      this.startRecording().catch((error) => {
+        this.showError(this.extractErrorMessage(error));
       });
-    }
+    });
 
-    if (stopButton) {
-      stopButton.addEventListener("click", () => {
-        this.stopRecording().catch((error) => {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to stop recording"
-          );
-        });
+    stopButton.addEventListener("click", () => {
+      this.stopRecording().catch((error) => {
+        this.showError(this.extractErrorMessage(error));
       });
-    }
+    });
 
-    // Process button is hidden when using mediabunny (processing happens during recording)
-    // Keep it for fallback to old method if needed
-    if (processButton) {
-      (processButton as HTMLElement).style.display = "none";
-      processButton.addEventListener("click", () => {
-        this.processVideo().catch((error) => {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to process video"
-          );
-        });
+    processButton.style.display = "none";
+    processButton.addEventListener("click", () => {
+      this.processVideo().catch((error) => {
+        this.showError(this.extractErrorMessage(error));
       });
-    }
+    });
 
-    // Mute button
-    const muteButton = this.shadow.querySelector("#muteButton");
-    if (muteButton) {
-      muteButton.addEventListener("click", () => {
-        this.streamManager.toggleMute();
-      });
-    }
+    muteButton.addEventListener("click", () => {
+      this.streamManager.toggleMute();
+    });
 
-    // Switch source button
-    const switchSourceButton = this.shadow.querySelector("#switchSourceButton");
-    if (switchSourceButton) {
-      switchSourceButton.addEventListener("click", () => {
-        this.toggleSource().catch((error) => {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to switch source"
-          );
-        });
+    switchSourceButton.addEventListener("click", () => {
+      this.toggleSource().catch((error) => {
+        this.showError(this.extractErrorMessage(error));
       });
-    }
+    });
 
-    if (downloadButton) {
-      downloadButton.addEventListener("click", () => {
-        try {
-          this.downloadVideo();
-        } catch (error) {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to download video"
-          );
-        }
-      });
-    }
+    downloadButton.addEventListener("click", () => {
+      try {
+        this.downloadVideo();
+      } catch (error) {
+        this.showError(this.extractErrorMessage(error));
+      }
+    });
 
-    if (playButton) {
-      playButton.addEventListener("click", () => {
-        try {
-          this.playVideo();
-        } catch (error) {
-          this.showError(
-            error instanceof Error ? error.message : "Failed to play video"
-          );
-        }
-      });
-    }
+    playButton.addEventListener("click", () => {
+      try {
+        this.playVideo();
+      } catch (error) {
+        this.showError(this.extractErrorMessage(error));
+      }
+    });
   }
 
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Called in constructor
@@ -1278,6 +1258,43 @@ export class VidtreoRecorder extends HTMLElement {
         .error.active {
           display: block;
         }
+
+        .upload-progress {
+          margin-top: 20px;
+          display: none;
+        }
+
+        .upload-progress.active {
+          display: block;
+        }
+
+        .upload-status {
+          margin-top: 20px;
+          padding: 16px;
+          border-radius: 8px;
+          display: none;
+        }
+
+        .upload-status.active {
+          display: block;
+        }
+
+        .upload-status.success {
+          background: #f0f9ff;
+          border: 2px solid #48bb78;
+          color: #22543d;
+        }
+
+        .upload-status.error {
+          background: #fee;
+          border: 2px solid #fcc;
+          color: #c33;
+        }
+
+        .upload-status-text {
+          font-size: 14px;
+          font-weight: 500;
+        }
       </style>
       <div class="container">
         <h1>Video Recorder</h1>
@@ -1332,12 +1349,22 @@ export class VidtreoRecorder extends HTMLElement {
             <button id="playButton">Play Video</button>
           </div>
         </div>
+
+        <div class="upload-progress" id="uploadProgress">
+          <div class="progress-bar">
+            <div class="progress-fill" id="uploadProgressFill"></div>
+          </div>
+          <div class="progress-text" id="uploadProgressText">Uploading... 0%</div>
+        </div>
+
+        <div class="upload-status" id="uploadStatus">
+          <div class="upload-status-text" id="uploadStatusText"></div>
+        </div>
       </div>
     `;
   }
 }
 
-// Register the custom element
 if (!customElements.get("vidtreo-recorder")) {
   customElements.define("vidtreo-recorder", VidtreoRecorder);
 }
